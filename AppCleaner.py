@@ -874,6 +874,104 @@ class UpdateDialog(ctk.CTkToplevel):
         self._bar.stop(); self._log.insert("end",f"\n❌  {msg}\n"); self._log.see("end")
         self._btn.configure(state="normal"); self.protocol("WM_DELETE_WINDOW",self.destroy)
 
+class TempCleanDialog(ctk.CTkToplevel):
+    CATEGORIES = [
+        {"key":"user_temp",   "label":"Temp utilisateur",       "path": os.environ.get("TEMP","")},
+        {"key":"sys_temp",    "label":"Temp système",            "path": r"C:\Windows\Temp"},
+        {"key":"prefetch",    "label":"Prefetch Windows",        "path": r"C:\Windows\Prefetch"},
+        {"key":"recycle_bin", "label":"Corbeille",               "path": None},
+    ]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Nettoyage des fichiers temporaires"); self.geometry("540x420")
+        self.resizable(False,False); self.grab_set()
+
+        ctk.CTkLabel(self, text="🧹  Nettoyage système",
+                     font=("Segoe UI",16,"bold")).pack(pady=(20,4))
+        ctk.CTkLabel(self, text="Sélectionnez les éléments à supprimer",
+                     font=("Segoe UI",11), text_color=MUTED).pack(pady=(0,12))
+
+        self._vars = {}; self._size_labels = {}
+        frame = ctk.CTkFrame(self, fg_color=BG_BAR, corner_radius=8)
+        frame.pack(fill="x", padx=24, pady=4)
+
+        for i, cat in enumerate(self.CATEGORIES):
+            row = ctk.CTkFrame(frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=6)
+            var = tk.BooleanVar(value=True); self._vars[cat["key"]] = var
+            ctk.CTkCheckBox(row, text=cat["label"], variable=var,
+                            font=("Segoe UI",12)).pack(side="left")
+            lbl = ctk.CTkLabel(row, text="calcul…", font=("Segoe UI",11),
+                               text_color=MUTED)
+            lbl.pack(side="right"); self._size_labels[cat["key"]] = lbl
+
+        self._lbl_result = ctk.CTkLabel(self, text="", font=("Segoe UI",12))
+        self._lbl_result.pack(pady=12)
+        self._bar = ctk.CTkProgressBar(self, width=460, mode="indeterminate")
+
+        bf = ctk.CTkFrame(self, fg_color="transparent"); bf.pack(pady=8)
+        ctk.CTkButton(bf, text="Annuler", width=110, fg_color="#374151",
+                      hover_color="#4B5563", command=self.destroy).pack(side="left", padx=10)
+        self._btn_clean = ctk.CTkButton(bf, text="Nettoyer", width=150,
+                      fg_color=DANGER, hover_color="#DC2626",
+                      command=self._clean).pack(side="left", padx=10)
+
+        threading.Thread(target=self._scan_sizes, daemon=True).start()
+
+    # ── scan sizes ──
+    def _scan_sizes(self):
+        for cat in self.CATEGORIES:
+            key = cat["key"]
+            if key == "recycle_bin":
+                sz = self._recycle_size()
+            else:
+                sz = folder_size(cat["path"]) if cat.get("path") and os.path.isdir(cat["path"]) else 0
+            self.after(0, lambda k=key, s=sz:
+                self._size_labels[k].configure(text=fmt_size(s), text_color=WARNING if s>0 else MUTED))
+
+    def _recycle_size(self):
+        total = 0
+        for drive in [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]:
+            rb = os.path.join(drive, "$Recycle.Bin")
+            if os.path.isdir(rb): total += folder_size(rb)
+        return total
+
+    # ── clean ──
+    def _clean(self):
+        self._bar.pack(pady=(0,8)); self._bar.start()
+        self._lbl_result.configure(text="Nettoyage en cours…")
+        threading.Thread(target=self._do_clean, daemon=True).start()
+
+    def _do_clean(self):
+        freed = 0
+        for cat in self.CATEGORIES:
+            if not self._vars[cat["key"]].get(): continue
+            key = cat["key"]
+            if key == "recycle_bin":
+                try:
+                    ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, 1)
+                    freed += self._recycle_size()
+                except: pass
+            else:
+                path = cat.get("path","")
+                if not path or not os.path.isdir(path): continue
+                for name in os.listdir(path):
+                    fp = os.path.join(path, name)
+                    try:
+                        before = folder_size(fp) if os.path.isdir(fp) else os.path.getsize(fp)
+                        shutil.rmtree(fp) if os.path.isdir(fp) else os.remove(fp)
+                        freed += before
+                    except: pass
+                self.after(0, lambda k=key:
+                    self._size_labels[k].configure(text="0 o", text_color=MUTED))
+        self.after(0, lambda: self._done(freed))
+
+    def _done(self, freed):
+        self._bar.stop(); self._bar.pack_forget()
+        self._lbl_result.configure(
+            text=f"✅  {fmt_size(freed)} libérés !", text_color=SUCCESS)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FENÊTRE PRINCIPALE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -898,9 +996,12 @@ class AppCleaner(ctk.CTk):
                      ).grid(row=0,column=0,padx=20,pady=14)
         ctk.CTkLabel(hdr,text="Gérez et nettoyez vos applications Windows",
                      font=("Segoe UI",11),text_color=MUTED).grid(row=0,column=1,padx=8,sticky="w")
+        ctk.CTkButton(hdr,text="🧹 Nettoyer",width=130,height=36,
+                      font=("Segoe UI",12,"bold"),fg_color="#7C3AED",hover_color="#6D28D9",
+                      command=lambda:TempCleanDialog(self)).grid(row=0,column=2,padx=4,pady=14)
         ctk.CTkButton(hdr,text="⬆  Mettre à jour tout",width=180,height=36,
                       font=("Segoe UI",12,"bold"),fg_color="#059669",hover_color="#047857",
-                      command=lambda:UpdateDialog(self)).grid(row=0,column=2,padx=4,pady=14)
+                      command=lambda:UpdateDialog(self)).grid(row=0,column=3,padx=4,pady=14)
         self._btn_update = ctk.CTkButton(hdr,text="🆕 Nouvelle version !",width=160,height=36,
                       font=("Segoe UI",11,"bold"),fg_color=WARNING,hover_color="#D97706",
                       command=self._open_releases)

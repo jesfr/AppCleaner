@@ -1015,7 +1015,7 @@ class AppCleaner(ctk.CTk):
         self._lbl_status.grid(row=0,column=5,padx=20)
 
         # Tabs
-        self._tabs = ctk.CTkTabview(self, corner_radius=0, fg_color=BG_DARK,
+        self._tabs = ctk.CTkTabview(self, corner_radius=0, fg_color=BG_HDR,
             segmented_button_fg_color=BG_HDR, segmented_button_selected_color=ACCENT,
             segmented_button_selected_hover_color="#2563EB",
             segmented_button_unselected_color=BG_HDR,

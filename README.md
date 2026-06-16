@@ -41,7 +41,7 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 
 ## 📸 Aperçu
 
-![AppCleaner interface](https://github.com/jesfr/AppCleaner/assets/screenshot.png)
+![AppCleaner interface](app_cleaner_img.png)
 
 ---
 

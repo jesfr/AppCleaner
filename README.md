@@ -45,6 +45,7 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 - Onglet dédié avec **treemap interactif** — chaque rectangle = une app, proportionnel à sa taille
 - Couleurs par éditeur
 - Tooltip au survol : nom, taille, dernière utilisation
+- **Clic sur un rectangle** : fiche détaillée de l'app (éditeur, version, taille, dernière utilisation, emplacement, type) avec bouton de désinstallation directe
 - Barre de stats du disque (utilisé / libre / total)
 
 ### ⬆️ Mise à jour

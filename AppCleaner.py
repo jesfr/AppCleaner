@@ -5,7 +5,7 @@ import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter import messagebox
 import winreg, os, subprocess, threading, shutil, sys, ctypes
-import json, struct, codecs, hashlib, string
+import json, struct, codecs, hashlib, string, re, sqlite3
 from datetime import datetime, timedelta
 
 ctk.set_appearance_mode("dark")
@@ -76,9 +76,12 @@ def _days_ago(dt):
 
 def _type_badges(app):
     parts = []
-    if app.get("store"):    parts.append("Microsoft Store")
-    if app.get("portable"): parts.append("Portable")
-    if not parts:           parts.append("Classique")
+    if app.get("store"):      parts.append("Microsoft Store")
+    if app.get("game_steam"): parts.append("Steam")
+    if app.get("game_epic"):  parts.append("Epic Games")
+    if app.get("game_gog"):   parts.append("GOG")
+    if app.get("portable"):   parts.append("Portable")
+    if not parts:             parts.append("Classique")
     return "  ·  ".join(parts)
 
 def is_system(name, publisher, sys_comp, uninstall):
@@ -171,15 +174,93 @@ def scan_registry():
                 unin = _rv(sub, "UninstallString")
                 if is_system(name, pub, _rv(sub,"SystemComponent",0), unin): continue
                 seen.add(name)
+                is_gog = "gog" in (pub or "").lower()
                 apps.append({"name":name,"publisher":pub,"version":_rv(sub,"DisplayVersion"),
                     "location":loc,"uninstall":unin,"quiet":_rv(sub,"QuietUninstallString"),
-                    "portable":not bool(unin),"store":False,"size":0,"last_used":None})
+                    "portable":not bool(unin),"store":False,
+                    "game_gog":is_gog,"size":0,"last_used":None})
             except: pass
             finally:
                 try: winreg.CloseKey(sub)
                 except: pass
         try: winreg.CloseKey(root)
         except: pass
+    return apps
+
+# ── Steam ─────────────────────────────────────────────────────────────────────
+def scan_steam():
+    apps = []
+    # Find Steam path from registry
+    steam_root = ""
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam")
+        steam_root = winreg.QueryValueEx(k, "SteamPath")[0].replace("/", "\\")
+        winreg.CloseKey(k)
+    except:
+        for p in [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]:
+            if os.path.isdir(p): steam_root = p; break
+    if not steam_root: return []
+
+    # Collect all steamapps library folders
+    sa_dirs = [os.path.join(steam_root, "steamapps")]
+    vdf = os.path.join(steam_root, "steamapps", "libraryfolders.vdf")
+    if os.path.exists(vdf):
+        try:
+            txt = open(vdf, encoding="utf-8", errors="replace").read()
+            for m in re.finditer(r'"path"\s+"([^"]+)"', txt):
+                p = m.group(1).replace("\\\\", "\\").replace("/", "\\")
+                sa = os.path.join(p, "steamapps")
+                if os.path.isdir(sa) and sa not in sa_dirs:
+                    sa_dirs.append(sa)
+        except: pass
+
+    # Parse each appmanifest_*.acf file
+    for sa in sa_dirs:
+        if not os.path.isdir(sa): continue
+        try:
+            for fname in os.listdir(sa):
+                if not (fname.startswith("appmanifest_") and fname.endswith(".acf")): continue
+                try:
+                    txt = open(os.path.join(sa, fname), encoding="utf-8", errors="replace").read()
+                    g = lambda k: (re.search(rf'"{k}"\s+"([^"]*)"', txt, re.I) or [None,None])[1] or ""
+                    name = g("name"); appid = g("appid"); installdir = g("installdir")
+                    state = int(g("StateFlags") or "0")
+                    if not name or not appid or state not in (4, 6, 1542): continue
+                    loc = os.path.join(sa, "common", installdir) if installdir else ""
+                    apps.append({"name": name, "publisher": "Steam", "version": "",
+                        "location": loc, "uninstall": f"steam://uninstall/{appid}",
+                        "quiet": "", "portable": False, "store": False,
+                        "game_steam": True, "steam_appid": appid,
+                        "game_gog": False, "size": 0, "last_used": None})
+                except: pass
+        except: pass
+    return apps
+
+# ── Epic Games ────────────────────────────────────────────────────────────────
+def scan_epic():
+    apps = []
+    manifests = r"C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests"
+    if not os.path.isdir(manifests): return []
+    try:
+        for fname in os.listdir(manifests):
+            if not fname.endswith(".item"): continue
+            try:
+                data = json.load(open(os.path.join(manifests, fname),
+                                      encoding="utf-8", errors="replace"))
+                name = data.get("DisplayName", "").strip()
+                if not name: continue
+                loc  = (data.get("InstallLocation") or "").strip().rstrip("\\")
+                app_name = data.get("AppName", "")
+                apps.append({"name": name,
+                    "publisher": data.get("CatalogNamespace") or "Epic Games",
+                    "version": data.get("AppVersionString", ""),
+                    "location": loc,
+                    "uninstall": f"com.epicgames.launcher://apps/{app_name}?action=uninstall",
+                    "quiet": "", "portable": False, "store": False,
+                    "game_epic": True, "epic_appname": app_name,
+                    "game_gog": False, "size": 0, "last_used": None})
+            except: pass
+    except: pass
     return apps
 
 # ── Microsoft Store ───────────────────────────────────────────────────────────
@@ -210,6 +291,19 @@ def scan_store():
 
 # ── Désinstallation ───────────────────────────────────────────────────────────
 def do_uninstall(app):
+    if app.get("game_steam"):
+        try:
+            subprocess.Popen(f'start "" "steam://uninstall/{app["steam_appid"]}"', shell=True)
+            return True, "Lancé dans Steam — confirmez dans le launcher"
+        except Exception as e: return False, str(e)
+
+    if app.get("game_epic"):
+        try:
+            url = f'com.epicgames.launcher://apps/{app["epic_appname"]}?action=uninstall'
+            subprocess.Popen(f'start "" "{url}"', shell=True)
+            return True, "Lancé dans Epic — confirmez dans le launcher"
+        except Exception as e: return False, str(e)
+
     if app.get("store"):
         pkg = app.get("package_full_name","")
         if not pkg: return False, "Package introuvable"
@@ -432,7 +526,10 @@ class AppTable(ctk.CTkFrame):
             last = app.get("last_used")
             sz   = fmt_size(app["size"]) if app.get("size") else "—"
             pub  = (app.get("publisher") or "—")[:30]
-            badges = ("  [Store]" if app.get("store") else "") + \
+            badges = ("  [Store]"  if app.get("store")      else "") + \
+                     ("  [Steam]"  if app.get("game_steam") else "") + \
+                     ("  [Epic]"   if app.get("game_epic")  else "") + \
+                     ("  [GOG]"    if app.get("game_gog")   else "") + \
                      ("  [portable]" if app.get("portable") else "")
             name = app["name"] + badges
             if last:
@@ -726,6 +823,9 @@ class AppCleaner(ctk.CTk):
                         ).grid(row=0,column=c,padx=(0,8),pady=12); c+=1
         self._vs = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(bar,text="Store",variable=self._vs,command=self._filter
+                        ).grid(row=0,column=c,padx=(0,8),pady=12); c+=1
+        self._vg = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(bar,text="Jeux",variable=self._vg,command=self._filter
                         ).grid(row=0,column=c,padx=(0,16),pady=12); c+=99
         self._va = tk.BooleanVar(value=False)
         ctk.CTkCheckBox(bar,text="Tout sélectionner",variable=self._va,
@@ -766,8 +866,16 @@ class AppCleaner(ctk.CTk):
         ua = get_userassist()
         self.after(0,lambda:self._lbl_status.configure(text="Scan registre…"))
         apps = scan_registry()
-        self.after(0,lambda:self._lbl_status.configure(text="Scan Microsoft Store…"))
+        self.after(0,lambda:self._lbl_status.configure(text="Scan Steam…"))
         seen = {a["name"] for a in apps}
+        for a in scan_steam():
+            if a["name"] not in seen:
+                apps.append(a); seen.add(a["name"])
+        self.after(0,lambda:self._lbl_status.configure(text="Scan Epic Games…"))
+        for a in scan_epic():
+            if a["name"] not in seen:
+                apps.append(a); seen.add(a["name"])
+        self.after(0,lambda:self._lbl_status.configure(text="Scan Microsoft Store…"))
         for a in scan_store():
             if a["name"] not in seen:
                 apps.append(a); seen.add(a["name"])
@@ -797,6 +905,7 @@ class AppCleaner(ctk.CTk):
         if s:    f = [a for a in f if s in a["name"].lower() or s in (a.get("publisher") or "").lower()]
         if not self._vp.get(): f = [a for a in f if not a.get("portable")]
         if not self._vs.get(): f = [a for a in f if not a.get("store")]
+        if not self._vg.get(): f = [a for a in f if not (a.get("game_steam") or a.get("game_epic") or a.get("game_gog"))]
         if days:
             cut = datetime.now()-timedelta(days=days)
             f = [a for a in f if a.get("last_used") is None or a["last_used"]<cut]

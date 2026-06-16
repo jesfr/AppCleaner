@@ -488,44 +488,58 @@ class AppTable(ctk.CTkFrame):
 class AppDetailDialog(ctk.CTkToplevel):
     def __init__(self, parent, app, on_uninstall):
         super().__init__(parent)
-        self.title(app["name"]); self.geometry("520x420")
+        self.title(app["name"]); self.geometry("520x370")
         self.resizable(False, False); self.grab_set()
         self._app = app; self._on_uninstall = on_uninstall
 
-        # Colored header band
-        hdr = ctk.CTkFrame(self, fg_color=BG_HDR, corner_radius=0)
-        hdr.pack(fill="x")
-        col = pub_color(app.get("publisher") or app["name"])
-        ctk.CTkFrame(hdr, width=6, fg_color=col, corner_radius=0).pack(side="left", fill="y")
-        ctk.CTkLabel(hdr, text=app["name"], font=("Segoe UI", 16, "bold"),
-                     wraplength=460, justify="left").pack(side="left", padx=20, pady=10)
+        # 3 fixed rows: header / info / buttons
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
-        # Info grid
+        # ── Header ──
+        hdr = ctk.CTkFrame(self, fg_color=BG_HDR, corner_radius=0, height=56)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_propagate(False)
+        hdr.grid_columnconfigure(1, weight=1)
+        col = pub_color(app.get("publisher") or app["name"])
+        ctk.CTkFrame(hdr, width=6, fg_color=col, corner_radius=0
+                     ).grid(row=0, column=0, sticky="ns")
+        ctk.CTkLabel(hdr, text=app["name"], font=("Segoe UI", 15, "bold"),
+                     anchor="w", wraplength=460
+                     ).grid(row=0, column=1, sticky="ew", padx=16)
+
+        # ── Info grid ──
         info = ctk.CTkFrame(self, fg_color="transparent")
-        info.pack(fill="both", expand=True, padx=24, pady=8)
+        info.grid(row=1, column=0, sticky="nsew", padx=20, pady=6)
         rows = [
-            ("Éditeur",          app.get("publisher") or "—"),
-            ("Version",          app.get("version")   or "—"),
-            ("Taille",           fmt_size(app["size"]) if app.get("size") else "—"),
+            ("Éditeur",              app.get("publisher") or "—"),
+            ("Version",              app.get("version")   or "—"),
+            ("Taille",               fmt_size(app["size"]) if app.get("size") else "—"),
             ("Dernière utilisation", _days_ago(app.get("last_used"))),
-            ("Emplacement",      app.get("location")  or "—"),
-            ("Type",             _type_badges(app)),
+            ("Emplacement",          app.get("location")  or "—"),
+            ("Type",                 _type_badges(app)),
         ]
         for i, (lbl, val) in enumerate(rows):
-            ctk.CTkLabel(info, text=lbl + " :", font=("Segoe UI", 12, "bold"),
-                         text_color=MUTED, anchor="e", width=150).grid(
-                         row=i, column=0, sticky="e", pady=4)
-            ctk.CTkLabel(info, text=val, font=("Segoe UI", 12), anchor="w",
-                         wraplength=310, justify="left").grid(
-                         row=i, column=1, sticky="w", padx=12, pady=4)
+            ctk.CTkLabel(info, text=lbl + " :", font=("Segoe UI", 11, "bold"),
+                         text_color=MUTED, anchor="e", width=145
+                         ).grid(row=i, column=0, sticky="e", pady=3)
+            ctk.CTkLabel(info, text=val, font=("Segoe UI", 11), anchor="w",
+                         wraplength=310, justify="left"
+                         ).grid(row=i, column=1, sticky="w", padx=10, pady=3)
 
-        # Buttons — always visible at bottom
-        bf = ctk.CTkFrame(self, fg_color="transparent")
-        bf.pack(side="bottom", pady=12)
-        ctk.CTkButton(bf, text="Fermer", width=110, fg_color="#374151",
-                      hover_color="#4B5563", command=self.destroy).pack(side="left", padx=10)
-        ctk.CTkButton(bf, text="Désinstaller", width=150, fg_color=DANGER,
-                      hover_color="#DC2626", command=self._uninstall).pack(side="left", padx=10)
+        # ── Buttons ──
+        bf = ctk.CTkFrame(self, fg_color="transparent", height=56)
+        bf.grid(row=2, column=0, sticky="ew")
+        bf.grid_propagate(False)
+        bf.grid_columnconfigure(0, weight=1)
+        inner = ctk.CTkFrame(bf, fg_color="transparent")
+        inner.place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkButton(inner, text="Fermer", width=110, fg_color="#374151",
+                      hover_color="#4B5563", command=self.destroy
+                      ).pack(side="left", padx=10)
+        ctk.CTkButton(inner, text="Désinstaller", width=150, fg_color=DANGER,
+                      hover_color="#DC2626", command=self._uninstall
+                      ).pack(side="left", padx=10)
 
     def _uninstall(self):
         self.destroy()

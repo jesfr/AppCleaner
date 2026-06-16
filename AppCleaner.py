@@ -1,12 +1,17 @@
-"""AppCleaner v2.0 — Gestionnaire d'applications Windows"""
+"""AppCleaner v3.0 — Gestionnaire d'applications Windows"""
 
 import customtkinter as ctk
 import tkinter as tk
 import tkinter.ttk as ttk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import winreg, os, subprocess, threading, shutil, sys, ctypes
-import json, struct, codecs, hashlib, string, re, sqlite3
+import json, struct, codecs, hashlib, string, re, sqlite3, csv
+import urllib.request, urllib.error
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+CURRENT_VERSION = "v3.0"
+HISTORY_FILE    = os.path.join(os.path.expanduser("~"), ".appcleaner_history.json")
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -35,6 +40,102 @@ SYSTEM_PREFIXES = (
     ".net core",".net framework","vcredist","vc_redist",
     "windows app runtime","microsoft windows desktop",
 )
+
+# ── Historique ────────────────────────────────────────────────────────────────
+def load_history():
+    try:
+        return json.load(open(HISTORY_FILE, encoding="utf-8"))
+    except: return []
+
+def append_history(app, success):
+    h = load_history()
+    h.append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+               "name": app["name"], "publisher": app.get("publisher") or "—",
+               "size": app.get("size", 0), "success": success})
+    try:
+        json.dump(h, open(HISTORY_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    except: pass
+
+# ── Doublons ──────────────────────────────────────────────────────────────────
+def find_duplicates(apps):
+    groups = {}
+    for app in apps:
+        key = re.sub(r'[\s_\-\.]*[v]?[\d]+[\d\.\-\_]*.*$', '', app["name"], flags=re.I).strip().lower()
+        key = re.sub(r'\s*(x64|x86|32.bit|64.bit|\(64\)|\(32\))\s*$', '', key, flags=re.I).strip()
+        if not key: key = app["name"].lower()
+        groups.setdefault(key, []).append(app)
+    for group in groups.values():
+        flag = len(group) > 1
+        for app in group: app["duplicate"] = flag
+
+# ── Démarrage ─────────────────────────────────────────────────────────────────
+STARTUP_REG = [
+    (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",         "user"),
+    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",         "system"),
+    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", "system"),
+]
+STARTUP_APPROVED = {
+    "user":   (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"),
+    "system": (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"),
+}
+
+def _startup_enabled(hive, approved_path, name):
+    try:
+        k = winreg.OpenKey(hive, approved_path)
+        data, _ = winreg.QueryValueEx(k, name)
+        winreg.CloseKey(k)
+        return data[0] == 2
+    except: return True  # absent = enabled
+
+def scan_startup():
+    entries = []
+    seen = set()
+    for hive, path, scope in STARTUP_REG:
+        try:
+            k = winreg.OpenKey(hive, path)
+            ah, ap = STARTUP_APPROVED[scope]
+            for i in range(winreg.QueryInfoKey(k)[1]):
+                try:
+                    name, cmd, _ = winreg.EnumValue(k, i)
+                    if name in seen: continue
+                    seen.add(name)
+                    enabled = _startup_enabled(ah, ap, name)
+                    entries.append({"name": name, "command": cmd, "scope": scope,
+                                    "hive": hive, "reg_path": path, "enabled": enabled})
+                except: pass
+            winreg.CloseKey(k)
+        except: pass
+    # Startup folders
+    for scope, csidl in [("user", 7), ("system", 38)]:
+        try:
+            buf = ctypes.create_unicode_buffer(260)
+            ctypes.windll.shell32.SHGetFolderPathW(0, csidl, 0, 0, buf)
+            folder = buf.value
+            if os.path.isdir(folder):
+                for f in os.listdir(folder):
+                    fp = os.path.join(folder, f)
+                    if f.lower().endswith((".lnk", ".exe", ".bat")) and f not in seen:
+                        seen.add(f)
+                        entries.append({"name": os.path.splitext(f)[0], "command": fp,
+                                        "scope": scope, "hive": None, "reg_path": None,
+                                        "enabled": True})
+        except: pass
+    return entries
+
+def toggle_startup(entry):
+    hive = entry.get("hive"); name = entry["name"]
+    scope = entry["scope"]; reg_path = entry.get("reg_path")
+    if hive is None: return  # folder entries: not toggleable from here
+    ah, ap = STARTUP_APPROVED[scope]
+    try:
+        k = winreg.OpenKey(ah, ap, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
+    except:
+        k = winreg.CreateKey(ah, ap)
+    byte0 = b'\x03' if entry["enabled"] else b'\x02'
+    data  = byte0 + b'\x00' * 11
+    winreg.SetValueEx(k, name, 0, winreg.REG_BINARY, data)
+    winreg.CloseKey(k)
+    entry["enabled"] = not entry["enabled"]
 
 # ── Utilitaires ───────────────────────────────────────────────────────────────
 def is_admin():
@@ -360,8 +461,12 @@ class TreemapView(ctk.CTkFrame):
     def __init__(self, parent, on_uninstall=None, **kw):
         super().__init__(parent, corner_radius=0, fg_color=BG_DARK, **kw)
         self._apps = []; self._rects = []; self._tip = None
-        self._on_uninstall = on_uninstall
+        self._on_uninstall = on_uninstall; self._search = ""
         self._build()
+
+    def set_search(self, term):
+        self._search = term.lower().strip()
+        if self._rects: self._redraw()
 
     def _build(self):
         self.grid_rowconfigure(1, weight=1)
@@ -420,15 +525,19 @@ class TreemapView(ctk.CTkFrame):
                 text="Aucune donnée.\nLancez d'abord un scan complet.",
                 fill=MUTED, font=("Segoe UI",13), justify="center")
             return
+        s = self._search
         for rx,ry,rw,rh,app in _split(self._apps, 2, 2, w-4, h-4):
+            match = not s or s in app["name"].lower() or s in (app.get("publisher") or "").lower()
             col = pub_color(app.get("publisher") or app["name"])
+            if not match: col = "#1E2535"  # dim non-matching
             rid = c.create_rectangle(rx,ry,rx+rw,ry+rh, fill=col, outline=BG_DARK, width=1)
             tid = None
             if rw > 50 and rh > 24:
                 nm = app["name"][:18] + ("…" if len(app["name"])>18 else "")
+                fg = "white" if match else "#374151"
                 tid = c.create_text(rx+rw/2, ry+rh/2,
                     text=f"{nm}\n{fmt_size(app['size'])}",
-                    fill="white", font=("Segoe UI", 8 if rw<120 else 10),
+                    fill=fg, font=("Segoe UI", 8 if rw<120 else 10),
                     justify="center", width=rw-8)
             self._rects.append((rx,ry,rx+rw,ry+rh,app,rid,tid))
 
@@ -530,7 +639,8 @@ class AppTable(ctk.CTkFrame):
                      ("  [Steam]"  if app.get("game_steam") else "") + \
                      ("  [Epic]"   if app.get("game_epic")  else "") + \
                      ("  [GOG]"    if app.get("game_gog")   else "") + \
-                     ("  [portable]" if app.get("portable") else "")
+                     ("  [portable]" if app.get("portable") else "") + \
+                     ("  ⚠ doublon" if app.get("duplicate") else "")
             name = app["name"] + badges
             if last:
                 d = (datetime.now()-last).days
@@ -769,9 +879,10 @@ class AppCleaner(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("AppCleaner"); self.geometry("1300x860"); self.minsize(960,600)
+        self.title("AppCleaner v3.0"); self.geometry("1300x860"); self.minsize(960,600)
         self._all_apps = []; self._filtered = []
         self._build_ui(); self._start_scan()
+        threading.Thread(target=self._check_update, daemon=True).start()
 
     def _build_ui(self):
         self.grid_rowconfigure(1,weight=1); self.grid_columnconfigure(0,weight=1)
@@ -785,9 +896,12 @@ class AppCleaner(ctk.CTk):
                      font=("Segoe UI",11),text_color=MUTED).grid(row=0,column=1,padx=8,sticky="w")
         ctk.CTkButton(hdr,text="⬆  Mettre à jour tout",width=180,height=36,
                       font=("Segoe UI",12,"bold"),fg_color="#059669",hover_color="#047857",
-                      command=lambda:UpdateDialog(self)).grid(row=0,column=2,padx=12,pady=14)
+                      command=lambda:UpdateDialog(self)).grid(row=0,column=2,padx=4,pady=14)
+        self._btn_update = ctk.CTkButton(hdr,text="🆕 Nouvelle version !",width=160,height=36,
+                      font=("Segoe UI",11,"bold"),fg_color=WARNING,hover_color="#D97706",
+                      command=self._open_releases)
         self._lbl_status = ctk.CTkLabel(hdr,text="",font=("Segoe UI",11),text_color=MUTED)
-        self._lbl_status.grid(row=0,column=3,padx=20)
+        self._lbl_status.grid(row=0,column=4,padx=20)
 
         # Tabs
         self._tabs = ctk.CTkTabview(self, corner_radius=0, fg_color=BG_DARK,
@@ -798,6 +912,8 @@ class AppCleaner(ctk.CTk):
         self._tabs.grid(row=1,column=0,sticky="nsew")
         self._tabs.add("  Applications  ")
         self._tabs.add("  Espace disque  ")
+        self._tabs.add("  Démarrage  ")
+        self._tabs.add("  Historique  ")
         self._tabs.configure(command=self._tab_change)
 
         # ── Tab Applications ──
@@ -841,10 +957,13 @@ class AppCleaner(ctk.CTk):
         self._lbl_cnt.grid(row=0,column=0,padx=20,pady=16)
         self._lbl_sel = ctk.CTkLabel(bot,text="",font=("Segoe UI",11),text_color=MUTED)
         self._lbl_sel.grid(row=0,column=1,padx=8,sticky="w")
+        ctk.CTkButton(bot,text="📋 Exporter CSV",width=140,height=42,
+            font=("Segoe UI",12),fg_color="#374151",hover_color="#4B5563",
+            command=self._export_csv).grid(row=0,column=2,padx=(0,8),pady=10)
         self._btn_u = ctk.CTkButton(bot,text="Désinstaller la sélection",width=220,height=42,
             font=("Segoe UI",13,"bold"),fg_color=DANGER,hover_color="#DC2626",
             state="disabled",command=self._ask_uninstall)
-        self._btn_u.grid(row=0,column=2,padx=20,pady=10)
+        self._btn_u.grid(row=0,column=3,padx=20,pady=10)
 
         # ── Tab Espace disque ──
         t2 = self._tabs.tab("  Espace disque  ")
@@ -852,9 +971,133 @@ class AppCleaner(ctk.CTk):
         self._treemap = TreemapView(t2, on_uninstall=lambda a: self._run_uninstall([a]))
         self._treemap.grid(row=0,column=0,sticky="nsew")
 
+        # ── Tab Démarrage ──
+        t3 = self._tabs.tab("  Démarrage  ")
+        t3.grid_rowconfigure(1,weight=1); t3.grid_columnconfigure(0,weight=1)
+        sb = ctk.CTkFrame(t3,height=52,corner_radius=0,fg_color=BG_BAR)
+        sb.grid(row=0,column=0,sticky="ew"); sb.grid_columnconfigure(1,weight=1)
+        ctk.CTkLabel(sb,text="Apps lancées au démarrage de Windows",
+                     font=("Segoe UI",13,"bold")).grid(row=0,column=0,padx=20,pady=14,sticky="w")
+        ctk.CTkButton(sb,text="↺ Actualiser",width=120,height=34,fg_color="#374151",
+                      hover_color="#4B5563",command=self._refresh_startup
+                      ).grid(row=0,column=2,padx=16,pady=10)
+        sf = ctk.CTkFrame(t3,corner_radius=0,fg_color=BG_DARK)
+        sf.grid(row=1,column=0,sticky="nsew",padx=4,pady=4)
+        sf.grid_rowconfigure(0,weight=1); sf.grid_columnconfigure(0,weight=1)
+        self._startup_tree = ttk.Treeview(sf,columns=("en","name","scope","cmd"),
+            show="headings",style="App.Treeview",selectmode="none")
+        for col,hdr,w in [("en","","36"),("name","Nom","260"),("scope","Portée","100"),("cmd","Commande","500")]:
+            self._startup_tree.heading(col,text=hdr)
+            self._startup_tree.column(col,width=int(w),anchor="center" if col=="en" else "w",
+                stretch=(col=="cmd"))
+        sv2 = ttk.Scrollbar(sf,orient="vertical",command=self._startup_tree.yview,
+                            style="Dark.Vertical.TScrollbar")
+        self._startup_tree.configure(yscrollcommand=sv2.set)
+        self._startup_tree.grid(row=0,column=0,sticky="nsew")
+        sv2.grid(row=0,column=1,sticky="ns")
+        self._startup_tree.bind("<Button-1>", self._startup_click)
+        self._startup_entries = []
+
+        # ── Tab Historique ──
+        t4 = self._tabs.tab("  Historique  ")
+        t4.grid_rowconfigure(1,weight=1); t4.grid_columnconfigure(0,weight=1)
+        hb = ctk.CTkFrame(t4,height=52,corner_radius=0,fg_color=BG_BAR)
+        hb.grid(row=0,column=0,sticky="ew"); hb.grid_columnconfigure(1,weight=1)
+        ctk.CTkLabel(hb,text="Historique des désinstallations",
+                     font=("Segoe UI",13,"bold")).grid(row=0,column=0,padx=20,pady=14,sticky="w")
+        ctk.CTkButton(hb,text="🗑 Effacer",width=100,height=34,fg_color=DANGER,
+                      hover_color="#DC2626",command=self._clear_history
+                      ).grid(row=0,column=2,padx=16,pady=10)
+        hf = ctk.CTkFrame(t4,corner_radius=0,fg_color=BG_DARK)
+        hf.grid(row=1,column=0,sticky="nsew",padx=4,pady=4)
+        hf.grid_rowconfigure(0,weight=1); hf.grid_columnconfigure(0,weight=1)
+        self._hist_tree = ttk.Treeview(hf,columns=("date","name","pub","size","ok"),
+            show="headings",style="App.Treeview",selectmode="none")
+        for col,hdr,w in [("date","Date","150"),("name","Application","280"),
+                          ("pub","Éditeur","160"),("size","Taille","100"),("ok","Résultat","90")]:
+            self._hist_tree.heading(col,text=hdr)
+            self._hist_tree.column(col,width=int(w),anchor="w" if col not in ("size","ok") else "center",
+                stretch=(col=="name"))
+        sv3 = ttk.Scrollbar(hf,orient="vertical",command=self._hist_tree.yview,
+                            style="Dark.Vertical.TScrollbar")
+        self._hist_tree.configure(yscrollcommand=sv3.set)
+        self._hist_tree.grid(row=0,column=0,sticky="nsew")
+        sv3.grid(row=0,column=1,sticky="ns")
+
     def _tab_change(self):
-        if "disque" in self._tabs.get().lower():
-            self._treemap.update_apps(self._all_apps)
+        tab = self._tabs.get().lower()
+        if "disque"    in tab: self._treemap.update_apps(self._all_apps)
+        if "démarrage" in tab: self._refresh_startup()
+        if "historique" in tab: self._refresh_history()
+
+    # ── Auto-update ──
+    def _check_update(self):
+        try:
+            url = "https://api.github.com/repos/jesfr/AppCleaner/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "AppCleaner"})
+            data = json.loads(urllib.request.urlopen(req, timeout=5).read())
+            latest = data.get("tag_name","")
+            if latest and latest != CURRENT_VERSION:
+                self.after(0, lambda: self._btn_update.grid(row=0,column=3,padx=4,pady=14))
+        except: pass
+
+    def _open_releases(self):
+        import webbrowser
+        webbrowser.open("https://github.com/jesfr/AppCleaner/releases/latest")
+
+    # ── Export CSV ──
+    def _export_csv(self):
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+            filetypes=[("CSV","*.csv")], title="Exporter la liste")
+        if not path: return
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(["Nom","Éditeur","Version","Taille (o)","Dernière utilisation","Emplacement","Type"])
+            for app in self._filtered:
+                lu = app["last_used"].strftime("%Y-%m-%d") if app.get("last_used") else ""
+                w.writerow([app["name"], app.get("publisher",""), app.get("version",""),
+                    app.get("size",0), lu, app.get("location",""), _type_badges(app)])
+        messagebox.showinfo("Export CSV", f"Fichier enregistré :\n{path}")
+
+    # ── Démarrage ──
+    def _refresh_startup(self):
+        self._startup_entries = scan_startup()
+        self._startup_tree.delete(*self._startup_tree.get_children())
+        for i,e in enumerate(self._startup_entries):
+            icon = "✅" if e["enabled"] else "⛔"
+            scope = "Système" if e["scope"]=="system" else "Utilisateur"
+            base = "odd" if i%2 else "even"
+            self._startup_tree.insert("","end",iid=str(i),
+                values=(icon, e["name"], scope, e["command"]), tags=(base,))
+
+    def _startup_click(self, ev):
+        iid = self._startup_tree.identify_row(ev.y)
+        if not iid: return
+        idx = int(iid); e = self._startup_entries[idx]
+        if e["hive"] is None:
+            messagebox.showinfo("Démarrage","Entrée dans le dossier Démarrage — à gérer manuellement.")
+            return
+        toggle_startup(e)
+        icon = "✅" if e["enabled"] else "⛔"
+        scope = "Système" if e["scope"]=="system" else "Utilisateur"
+        base = "odd" if idx%2 else "even"
+        self._startup_tree.item(iid, values=(icon, e["name"], scope, e["command"]), tags=(base,))
+
+    # ── Historique ──
+    def _refresh_history(self):
+        self._hist_tree.delete(*self._hist_tree.get_children())
+        for i,h in enumerate(reversed(load_history())):
+            ok = "✅" if h.get("success") else "❌"
+            sz = fmt_size(h.get("size",0)) if h.get("size") else "—"
+            base = "odd" if i%2 else "even"
+            self._hist_tree.insert("","end",iid=str(i),
+                values=(h["date"],h["name"],h.get("publisher","—"),sz,ok), tags=(base,))
+
+    def _clear_history(self):
+        if messagebox.askyesno("Historique","Effacer tout l'historique ?"):
+            try: os.remove(HISTORY_FILE)
+            except: pass
+            self._refresh_history()
 
     # ── Scan ──
     def _start_scan(self):
@@ -880,12 +1123,18 @@ class AppCleaner(ctk.CTk):
             if a["name"] not in seen:
                 apps.append(a); seen.add(a["name"])
         total = len(apps)
-        for i,app in enumerate(apps):
-            self.after(0,lambda i=i,t=total:self._lbl_status.configure(text=f"Analyse {i+1}/{t}…"))
+        done  = [0]
+        def process(app):
             loc = app.get("location","")
             if loc and os.path.isdir(loc):
-                app["size"]     = folder_size(loc)
+                app["size"] = folder_size(loc)
             app["last_used"] = best_last_used(app, ua)
+            done[0] += 1
+            self.after(0, lambda d=done[0], t=total:
+                self._lbl_status.configure(text=f"Analyse {d}/{t}…"))
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(process, apps))
+        find_duplicates(apps)
         apps.sort(key=lambda a:a["name"].lower())
         self._all_apps = apps
         self.after(0, self._scan_done)
@@ -916,6 +1165,7 @@ class AppCleaner(ctk.CTk):
         self._filtered = f
         self._table.populate(f)
         self._lbl_cnt.configure(text=f"{len(f)} application(s) — {fmt_size(sum(a.get('size',0) for a in f))}")
+        self._treemap.set_search(self._sv.get())
 
     def _update_bot(self):
         sel = self._table.get_selected()
@@ -940,6 +1190,7 @@ class AppCleaner(ctk.CTk):
             for i,app in enumerate(apps):
                 prog.after(0,lambda n=app["name"],d=i,t=len(apps):prog.update(d,t,n))
                 s,msg = do_uninstall(app)
+                append_history(app, s)
                 if s: ok+=1; freed+=app.get("size",0); prog.after(0,lambda n=app["name"]:prog.log_line(f"✓  {n}"))
                 else: fail+=1; prog.after(0,lambda n=app["name"],m=msg:prog.log_line(f"✗  {n}  ({m})"))
             prog.after(0,lambda:self._result(prog,ok,fail,freed))

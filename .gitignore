@@ -1,0 +1,13 @@
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# OS
+Thumbs.db
+desktop.ini

@@ -68,6 +68,19 @@ def pub_color(pub):
     h = int(hashlib.md5((pub or "?").encode()).hexdigest(), 16)
     return PALETTE[h % len(PALETTE)]
 
+def _days_ago(dt):
+    if not dt: return "inconnu"
+    d = (datetime.now() - dt).days
+    if d == 0: return "aujourd'hui"
+    return f"il y a {d} j  ({dt.strftime('%d/%m/%Y')})"
+
+def _type_badges(app):
+    parts = []
+    if app.get("store"):    parts.append("Microsoft Store")
+    if app.get("portable"): parts.append("Portable")
+    if not parts:           parts.append("Classique")
+    return "  ·  ".join(parts)
+
 def is_system(name, publisher, sys_comp, uninstall):
     if sys_comp == 1: return True
     if (publisher or "").lower().strip() in SYSTEM_PUBLISHERS: return True
@@ -250,9 +263,10 @@ def _split(items, x, y, w, h):
         return _split(items[:mid],x,y,w,th) + _split(items[mid:],x,y+th+G,w,bh)
 
 class TreemapView(ctk.CTkFrame):
-    def __init__(self, parent, **kw):
+    def __init__(self, parent, on_uninstall=None, **kw):
         super().__init__(parent, corner_radius=0, fg_color=BG_DARK, **kw)
         self._apps = []; self._rects = []; self._tip = None
+        self._on_uninstall = on_uninstall
         self._build()
 
     def _build(self):
@@ -280,6 +294,7 @@ class TreemapView(ctk.CTkFrame):
         self._c.bind("<Configure>", lambda e: self._redraw())
         self._c.bind("<Motion>", self._hover)
         self._c.bind("<Leave>",  lambda e: self._hide_tip())
+        self._c.bind("<Button-1>", self._on_click)
 
     def update_apps(self, apps):
         self._apps = sorted([a for a in apps if a.get("size",0)>0],
@@ -351,6 +366,12 @@ class TreemapView(ctk.CTkFrame):
             try: self._tip.destroy()
             except: pass
             self._tip = None
+
+    def _on_click(self, e):
+        self._hide_tip()
+        app = self._at(e.x, e.y)
+        if app and self._on_uninstall is not None:
+            AppDetailDialog(self, app, self._on_uninstall)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TABLE
@@ -464,6 +485,53 @@ class AppTable(ctk.CTkFrame):
 # ═══════════════════════════════════════════════════════════════════════════════
 # DIALOGUES
 # ═══════════════════════════════════════════════════════════════════════════════
+class AppDetailDialog(ctk.CTkToplevel):
+    def __init__(self, parent, app, on_uninstall):
+        super().__init__(parent)
+        self.title(app["name"]); self.geometry("520x390")
+        self.resizable(False, False); self.grab_set()
+        self._app = app; self._on_uninstall = on_uninstall
+
+        # Colored header band
+        hdr = ctk.CTkFrame(self, fg_color=BG_HDR, corner_radius=0)
+        hdr.pack(fill="x")
+        col = pub_color(app.get("publisher") or app["name"])
+        ctk.CTkFrame(hdr, width=6, fg_color=col, corner_radius=0).pack(side="left", fill="y")
+        ctk.CTkLabel(hdr, text=app["name"], font=("Segoe UI", 16, "bold"),
+                     wraplength=460, justify="left").pack(side="left", padx=20, pady=14)
+
+        # Info grid
+        info = ctk.CTkFrame(self, fg_color="transparent")
+        info.pack(fill="both", expand=True, padx=24, pady=14)
+        rows = [
+            ("Éditeur",          app.get("publisher") or "—"),
+            ("Version",          app.get("version")   or "—"),
+            ("Taille",           fmt_size(app["size"]) if app.get("size") else "—"),
+            ("Dernière utilisation", _days_ago(app.get("last_used"))),
+            ("Emplacement",      app.get("location")  or "—"),
+            ("Type",             _type_badges(app)),
+        ]
+        for i, (lbl, val) in enumerate(rows):
+            ctk.CTkLabel(info, text=lbl + " :", font=("Segoe UI", 12, "bold"),
+                         text_color=MUTED, anchor="e", width=150).grid(
+                         row=i, column=0, sticky="e", pady=5)
+            ctk.CTkLabel(info, text=val, font=("Segoe UI", 12), anchor="w",
+                         wraplength=310, justify="left").grid(
+                         row=i, column=1, sticky="w", padx=12, pady=5)
+
+        # Buttons
+        bf = ctk.CTkFrame(self, fg_color="transparent")
+        bf.pack(pady=14)
+        ctk.CTkButton(bf, text="Fermer", width=110, fg_color="#374151",
+                      hover_color="#4B5563", command=self.destroy).pack(side="left", padx=10)
+        ctk.CTkButton(bf, text="Désinstaller", width=150, fg_color=DANGER,
+                      hover_color="#DC2626", command=self._uninstall).pack(side="left", padx=10)
+
+    def _uninstall(self):
+        self.destroy()
+        self._on_uninstall(self._app)
+
+
 class UninstallDialog(ctk.CTkToplevel):
     def __init__(self, parent, apps):
         super().__init__(parent)
@@ -667,7 +735,7 @@ class AppCleaner(ctk.CTk):
         # ── Tab Espace disque ──
         t2 = self._tabs.tab("  Espace disque  ")
         t2.grid_rowconfigure(0,weight=1); t2.grid_columnconfigure(0,weight=1)
-        self._treemap = TreemapView(t2)
+        self._treemap = TreemapView(t2, on_uninstall=lambda a: self._run_uninstall([a]))
         self._treemap.grid(row=0,column=0,sticky="nsew")
 
     def _tab_change(self):

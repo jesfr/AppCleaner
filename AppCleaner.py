@@ -488,7 +488,7 @@ class AppTable(ctk.CTkFrame):
 class AppDetailDialog(ctk.CTkToplevel):
     def __init__(self, parent, app, on_uninstall):
         super().__init__(parent)
-        self.title(app["name"]); self.geometry("520x390")
+        self.title(app["name"]); self.geometry("520x420")
         self.resizable(False, False); self.grab_set()
         self._app = app; self._on_uninstall = on_uninstall
 
@@ -498,11 +498,11 @@ class AppDetailDialog(ctk.CTkToplevel):
         col = pub_color(app.get("publisher") or app["name"])
         ctk.CTkFrame(hdr, width=6, fg_color=col, corner_radius=0).pack(side="left", fill="y")
         ctk.CTkLabel(hdr, text=app["name"], font=("Segoe UI", 16, "bold"),
-                     wraplength=460, justify="left").pack(side="left", padx=20, pady=14)
+                     wraplength=460, justify="left").pack(side="left", padx=20, pady=10)
 
         # Info grid
         info = ctk.CTkFrame(self, fg_color="transparent")
-        info.pack(fill="both", expand=True, padx=24, pady=14)
+        info.pack(fill="both", expand=True, padx=24, pady=8)
         rows = [
             ("Éditeur",          app.get("publisher") or "—"),
             ("Version",          app.get("version")   or "—"),
@@ -514,14 +514,14 @@ class AppDetailDialog(ctk.CTkToplevel):
         for i, (lbl, val) in enumerate(rows):
             ctk.CTkLabel(info, text=lbl + " :", font=("Segoe UI", 12, "bold"),
                          text_color=MUTED, anchor="e", width=150).grid(
-                         row=i, column=0, sticky="e", pady=5)
+                         row=i, column=0, sticky="e", pady=4)
             ctk.CTkLabel(info, text=val, font=("Segoe UI", 12), anchor="w",
                          wraplength=310, justify="left").grid(
-                         row=i, column=1, sticky="w", padx=12, pady=5)
+                         row=i, column=1, sticky="w", padx=12, pady=4)
 
-        # Buttons
+        # Buttons — always visible at bottom
         bf = ctk.CTkFrame(self, fg_color="transparent")
-        bf.pack(pady=14)
+        bf.pack(side="bottom", pady=12)
         ctk.CTkButton(bf, text="Fermer", width=110, fg_color="#374151",
                       hover_color="#4B5563", command=self.destroy).pack(side="left", padx=10)
         ctk.CTkButton(bf, text="Désinstaller", width=150, fg_color=DANGER,

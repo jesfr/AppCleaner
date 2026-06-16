@@ -21,6 +21,7 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 
 ## 🖥️ Fonctionnalités
 
+### 🧹 Nettoyage
 - **Liste toutes les applications installées** avec leur taille sur le disque, l'éditeur et l'emplacement
 - **Filtre par durée d'inactivité** — 30 jours, 6 mois, 1 an, 2 ans…
 - **Recherche** par nom ou éditeur
@@ -28,9 +29,13 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 - **Cases à cocher** pour sélectionner les apps à supprimer
 - **Désinstallation silencieuse** automatique (MSI, NSIS, Inno Setup…)
 - **Apps portables** (sans installateur) : suppression du dossier entier
-- **Mise à jour en un clic** de toutes les apps via `winget`
 - **Bilan final** : nombre d'apps désinstallées + espace libéré
 - Applications système exclues automatiquement (drivers, runtimes Microsoft…)
+
+### ⬆️ Mise à jour
+- Bouton **"Mettre à jour tout"** qui lance `winget upgrade --all` en un clic
+- Affichage en temps réel de la progression dans une fenêtre dédiée
+- Résumé du nombre de mises à jour effectuées à la fin
 
 ---
 

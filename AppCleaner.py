@@ -356,9 +356,9 @@ def scan_epic():
                     "publisher": data.get("CatalogNamespace") or "Epic Games",
                     "version": data.get("AppVersionString", ""),
                     "location": loc,
-                    "uninstall": f"com.epicgames.launcher://apps/{app_name}?action=uninstall",
-                    "quiet": "", "portable": False, "store": False,
+                    "uninstall": "", "quiet": "", "portable": False, "store": False,
                     "game_epic": True, "epic_appname": app_name,
+                    "epic_manifest_path": os.path.join(manifests, fname),
                     "game_gog": False, "size": 0, "last_used": None})
             except: pass
     except: pass
@@ -399,10 +399,14 @@ def do_uninstall(app):
         except Exception as e: return False, str(e)
 
     if app.get("game_epic"):
+        loc      = app.get("location", "")
+        manifest = app.get("epic_manifest_path", "")
         try:
-            url = f'com.epicgames.launcher://apps/{app["epic_appname"]}?action=uninstall'
-            subprocess.Popen(f'start "" "{url}"', shell=True)
-            return True, "Lancé dans Epic — confirmez dans le launcher"
+            if loc and os.path.isdir(loc):
+                shutil.rmtree(loc)
+            if manifest and os.path.exists(manifest):
+                os.remove(manifest)
+            return True, "Supprimé"
         except Exception as e: return False, str(e)
 
     if app.get("store"):

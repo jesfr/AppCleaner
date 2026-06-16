@@ -1005,6 +1005,8 @@ class AppCleaner(ctk.CTk):
         self._btn_update = ctk.CTkButton(hdr,text="🆕 Nouvelle version !",width=160,height=36,
                       font=("Segoe UI",11,"bold"),fg_color=WARNING,hover_color="#D97706",
                       command=self._open_releases)
+        self._btn_update.grid(row=0,column=4,padx=4,pady=14)
+        self._btn_update.grid_remove()  # caché jusqu'à ce qu'une update soit dispo
         ctk.CTkButton(hdr,text="☕ Don",width=80,height=36,
                       font=("Segoe UI",11),fg_color="#1D4ED8",hover_color="#1E40AF",
                       command=lambda:__import__("webbrowser").open("https://www.paypal.com/paypalme/jesfr306")
@@ -1147,7 +1149,7 @@ class AppCleaner(ctk.CTk):
             data = json.loads(urllib.request.urlopen(req, timeout=5).read())
             latest = data.get("tag_name","")
             if latest and latest != CURRENT_VERSION:
-                self.after(0, lambda: self._btn_update.grid(row=0,column=3,padx=4,pady=14))
+                self.after(0, self._btn_update.grid)
         except: pass
 
     def _open_releases(self):

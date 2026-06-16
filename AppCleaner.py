@@ -267,7 +267,7 @@ class TreemapView(ctk.CTkFrame):
         drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
         self._drive_var = tk.StringVar(value=drives[0] if drives else "C:\\")
         ctk.CTkComboBox(top, values=drives, width=100, variable=self._drive_var,
-                        command=lambda _: self._draw()).grid(row=0,column=1,padx=(0,16),pady=12)
+                        command=lambda _: self._redraw()).grid(row=0,column=1,padx=(0,16),pady=12)
         self._lbl_disk = ctk.CTkLabel(top, text="", font=("Segoe UI",11), text_color=MUTED)
         self._lbl_disk.grid(row=0, column=2, padx=8)
         self._bar_c = tk.Canvas(top, height=14, bg=BG_HDR, highlightthickness=0)
@@ -277,14 +277,14 @@ class TreemapView(ctk.CTkFrame):
 
         self._c = tk.Canvas(self, bg=BG_DARK, highlightthickness=0)
         self._c.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        self._c.bind("<Configure>", lambda e: self._draw())
+        self._c.bind("<Configure>", lambda e: self._redraw())
         self._c.bind("<Motion>", self._hover)
         self._c.bind("<Leave>",  lambda e: self._hide_tip())
 
     def update_apps(self, apps):
         self._apps = sorted([a for a in apps if a.get("size",0)>0],
                             key=lambda a: a["size"], reverse=True)
-        self._draw()
+        self._redraw()
 
     def _draw_disk_bar(self):
         drive = self._drive_var.get()
@@ -302,7 +302,7 @@ class TreemapView(ctk.CTkFrame):
             self._bar_c.create_rectangle(0,0,uw,14,fill=color,outline="")
         except: pass
 
-    def _draw(self):
+    def _redraw(self):
         c = self._c; c.delete("all"); self._rects = []
         self._draw_disk_bar()
         w, h = c.winfo_width(), c.winfo_height()

@@ -12,14 +12,19 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 
 | Ton PC | Fichier à télécharger |
 |---|---|
-| **Windows 10** ou PC classique (Intel/AMD) | [AppCleaner-Windows10-x64.exe](https://github.com/jesfr/AppCleaner/releases/download/v1.0/AppCleaner-Windows10-x64.exe) |
-| **Windows 11 ARM** (Surface Pro X, PC Snapdragon…) | [AppCleaner-Windows11-ARM64.exe](https://github.com/jesfr/AppCleaner/releases/download/v1.0/AppCleaner-Windows11-ARM64.exe) |
+| **Windows 10** ou PC classique (Intel/AMD) | [AppCleaner-Windows10-x64.exe](https://github.com/jesfr/AppCleaner/releases/download/v2.0/AppCleaner-Windows10-x64.exe) |
+| **Windows 11 ARM** (Surface Pro X, PC Snapdragon…) | [AppCleaner-Windows11-ARM64.exe](https://github.com/jesfr/AppCleaner/releases/download/v2.0/AppCleaner-Windows11-ARM64.exe) |
 
 > ⚠️ **Windows peut afficher un avertissement SmartScreen** au premier lancement (app non signée). Clique sur **"Informations complémentaires"** puis **"Exécuter quand même"**.
 
 ---
 
 ## 🖥️ Fonctionnalités
+
+### 🏪 Applications détectées
+- Applications classiques (registre Windows, 32 et 64 bit)
+- **Applications Microsoft Store** (apps tierces uniquement, les apps système Microsoft sont exclues)
+- Applications portables (sans installateur)
 
 ### 🧹 Nettoyage
 - **Liste toutes les applications installées** avec leur taille sur le disque, l'éditeur et l'emplacement
@@ -31,6 +36,16 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 - **Apps portables** (sans installateur) : suppression du dossier entier
 - **Bilan final** : nombre d'apps désinstallées + espace libéré
 - Applications système exclues automatiquement (drivers, runtimes Microsoft…)
+
+### 📅 Détection de date (améliorée)
+- Source principale : **UserAssist** (registre Windows) — enregistre les vrais lancements de programmes
+- Fallback : date d'accès des fichiers `.exe`
+
+### 🗺️ Espace disque (style WinDirStat)
+- Onglet dédié avec **treemap interactif** — chaque rectangle = une app, proportionnel à sa taille
+- Couleurs par éditeur
+- Tooltip au survol : nom, taille, dernière utilisation
+- Barre de stats du disque (utilisé / libre / total)
 
 ### ⬆️ Mise à jour
 - Bouton **"Mettre à jour tout"** qui lance `winget upgrade --all` en un clic

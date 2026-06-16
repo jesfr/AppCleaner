@@ -1,5 +1,7 @@
 # 🗑 AppCleaner
 
+[![Donate](https://img.shields.io/badge/Faire%20un%20don-PayPal-blue?logo=paypal)](https://www.paypal.com/paypalme/jesfr306)
+
 **Gérez et nettoyez vos applications Windows en toute simplicité.**
 
 AppCleaner liste toutes vos applications installées, vous permet de filtrer celles que vous n'utilisez plus depuis un moment, de les sélectionner et de les désinstaller automatiquement — le tout dans une interface moderne.
@@ -103,6 +105,14 @@ pyinstaller --onefile --windowed --name "AppCleaner" AppCleaner.py
 ## ⚠️ Avertissement
 
 AppCleaner filtre les composants système connus, mais **vérifiez toujours la liste avant de désinstaller**. Certaines applications peuvent être des dépendances d'autres logiciels.
+
+---
+
+## ☕ Soutenir le projet
+
+AppCleaner est gratuit et open source. Si tu l'utilises et que tu veux soutenir le développement :
+
+[![Faire un don via PayPal](https://www.paypalobjects.com/fr_FR/FR/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/paypalme/jesfr306)
 
 ---
 

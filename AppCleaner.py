@@ -1005,8 +1005,12 @@ class AppCleaner(ctk.CTk):
         self._btn_update = ctk.CTkButton(hdr,text="🆕 Nouvelle version !",width=160,height=36,
                       font=("Segoe UI",11,"bold"),fg_color=WARNING,hover_color="#D97706",
                       command=self._open_releases)
+        ctk.CTkButton(hdr,text="☕ Don",width=80,height=36,
+                      font=("Segoe UI",11),fg_color="#1D4ED8",hover_color="#1E40AF",
+                      command=lambda:__import__("webbrowser").open("https://www.paypal.com/paypalme/jesfr306")
+                      ).grid(row=0,column=4,padx=4,pady=14)
         self._lbl_status = ctk.CTkLabel(hdr,text="",font=("Segoe UI",11),text_color=MUTED)
-        self._lbl_status.grid(row=0,column=4,padx=20)
+        self._lbl_status.grid(row=0,column=5,padx=20)
 
         # Tabs
         self._tabs = ctk.CTkTabview(self, corner_radius=0, fg_color=BG_DARK,

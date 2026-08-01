@@ -459,6 +459,10 @@ def do_uninstall(app):
     cmd = app.get("quiet") or app.get("uninstall","")
     if not cmd: return False, "Pas de commande"
     if not app.get("quiet"):
+        if not cmd.startswith('"'):
+            m = re.match(r'^(.*?\.exe)(\s.*)?$', cmd, re.IGNORECASE)
+            if m and " " in m.group(1):
+                cmd = f'"{m.group(1)}"{m.group(2) or ""}'
         cl = cmd.lower()
         if "msiexec" in cl:
             cmd = cmd.replace("/I{","/X{").replace("/i{","/X{")

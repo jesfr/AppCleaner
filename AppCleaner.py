@@ -752,7 +752,7 @@ class AppTable(ctk.CTkFrame):
 class AppDetailDialog(ctk.CTkToplevel):
     def __init__(self, parent, app, on_uninstall):
         super().__init__(parent)
-        self.title(app["name"]); self.geometry("520x370")
+        self.title(app["name"]); self.geometry("560x370")
         self.resizable(False, False); self.grab_set()
         self._app = app; self._on_uninstall = on_uninstall
 
@@ -801,9 +801,23 @@ class AppDetailDialog(ctk.CTkToplevel):
         ctk.CTkButton(inner, text="Fermer", width=110, fg_color="#374151",
                       hover_color="#4B5563", command=self.destroy
                       ).pack(side="left", padx=10)
+        loc = app.get("location") or ""
+        ctk.CTkButton(inner, text="📂 Ouvrir l'emplacement", width=170,
+                      fg_color="#374151", hover_color="#4B5563",
+                      state="normal" if os.path.isdir(loc) else "disabled",
+                      command=self._open_location
+                      ).pack(side="left", padx=10)
         ctk.CTkButton(inner, text="Désinstaller", width=150, fg_color=DANGER,
                       hover_color="#DC2626", command=self._uninstall
                       ).pack(side="left", padx=10)
+
+    def _open_location(self):
+        loc = self._app.get("location") or ""
+        try:
+            os.startfile(loc)
+        except Exception as e:
+            log.exception(f"Impossible d'ouvrir l'emplacement de {self._app.get('name')}")
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir le dossier :\n{e}")
 
     def _uninstall(self):
         self.destroy()

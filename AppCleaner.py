@@ -232,10 +232,10 @@ def compute_utility(app):
         score  = max(0, score - 20)
         reason += " · doublon détecté"
     score = max(0, min(100, score))
-    if   score >= 70: tag, icon = "success", "🟢"
-    elif score >= 40: tag, icon = "warning", "🟡"
-    else:             tag, icon = "danger",  "🔴"
-    return {"score": score, "tag": tag, "icon": icon, "reason": reason}
+    if   score >= 70: tag = "success"
+    elif score >= 40: tag = "warning"
+    else:             tag = "danger"
+    return {"score": score, "tag": tag, "icon": "●", "reason": reason}
 
 def is_system(name, publisher, sys_comp, uninstall):
     if sys_comp == 1: return True
@@ -877,8 +877,8 @@ class AppTable(ctk.CTkFrame):
                 tt = "success" if d<30 else ("warning" if d<90 else "danger")
             else:
                 lu, tt = "inconnu", "muted"
-            u = app.get("utility") or {"icon":"⚪","score":"—"}
-            util = f"{u['icon']} {u['score']}%" if u['score'] != "—" else "⚪ —"
+            u = app.get("utility") or {"icon":"●","score":"—"}
+            util = f"{u['icon']} {u['score']}%" if u['score'] != "—" else "● —"
             base = "odd" if i%2 else "even"
             self.tree.insert("","end",iid=str(i),
                 values=("☐",name,pub,sz,lu,util,app.get("location") or "—"),
@@ -1314,12 +1314,12 @@ class DiagnosticTab(ctk.CTkFrame):
 
         for w in self._detail_rows.winfo_children(): w.destroy()
         for i,(label,pts,detail) in enumerate(breakdown):
-            icon = "🟢" if pts==0 else ("🟡" if pts<15 else "🔴")
+            row_color = SUCCESS if pts==0 else (WARNING if pts<15 else DANGER)
             ctk.CTkLabel(self._detail_rows, text=label, font=("Segoe UI",11), anchor="w"
                          ).grid(row=i,column=0,sticky="w",pady=3)
             ctk.CTkLabel(self._detail_rows, text=str(detail), font=("Segoe UI",11),
                          text_color=MUTED, anchor="w").grid(row=i,column=1,sticky="w",padx=10,pady=3)
-            ctk.CTkLabel(self._detail_rows, text=icon, font=("Segoe UI",11)
+            ctk.CTkLabel(self._detail_rows, text="●", font=("Segoe UI",14), text_color=row_color
                          ).grid(row=i,column=2,sticky="e",pady=3)
 
         for w in self._sys_rows.winfo_children(): w.destroy()

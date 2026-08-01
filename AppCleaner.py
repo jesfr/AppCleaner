@@ -255,6 +255,13 @@ def get_windows_info():
         ts = _rv(k,"InstallDate",0)
         if ts: info["install_date"] = datetime.fromtimestamp(int(ts))
         winreg.CloseKey(k)
+        # Le registre indique encore "Windows 10" sur Windows 11 (bug connu) —
+        # winver se base sur le numéro de build (>=22000 = Windows 11) pour corriger l'affichage.
+        try:
+            if int(info["build"]) >= 22000 and "Windows 10" in info["product_name"]:
+                info["product_name"] = info["product_name"].replace("Windows 10", "Windows 11")
+        except (ValueError, TypeError):
+            pass
     except Exception:
         log.exception("Échec lecture infos Windows")
     try:
@@ -328,43 +335,48 @@ def get_user_folders_size():
     return out
 
 def compute_system_health(apps, startup_count, win_info, pending_reboot,
-                           dism_status, disk_health, temp_size):
-    pts = []  # (label, points, detail affiché)
-    orphans = sum(1 for a in apps if not (a.get("quiet") or a.get("uninstall"))
-                  and not a.get("portable") and not a.get("store")
-                  and not (a.get("game_steam") or a.get("game_epic") or a.get("game_gog")))
-    pts.append(("Entrées de désinstallation orphelines", min(orphans*2,20), orphans))
+                           dism_status, disk_health, temp_size, startup_entries=None):
+    pts = []  # (label, points, detail affiché, liste d'éléments concernés ou None)
+    orphan_apps = [a for a in apps if not (a.get("quiet") or a.get("uninstall"))
+                   and not a.get("portable") and not a.get("store")
+                   and not (a.get("game_steam") or a.get("game_epic") or a.get("game_gog"))]
+    pts.append(("Entrées de désinstallation orphelines", min(len(orphan_apps)*2,20),
+                len(orphan_apps), [a["name"] for a in orphan_apps]))
 
-    dups = sum(1 for a in apps if a.get("duplicate"))
-    pts.append(("Doublons détectés", min(dups*3,15), dups))
+    dup_apps = [a for a in apps if a.get("duplicate")]
+    pts.append(("Doublons détectés", min(len(dup_apps)*3,15), len(dup_apps),
+                [a["name"] + (f" — {fmt_size(a['size'])}" if a.get("size") else "") for a in dup_apps]))
 
-    unused = sum(1 for a in apps if a.get("utility") and a["utility"]["score"] <= 25)
-    pts.append(("Applications quasi jamais utilisées", min(unused,20), unused))
+    unused_apps = [a for a in apps if a.get("utility") and a["utility"]["score"] <= 25]
+    pts.append(("Applications quasi jamais utilisées", min(len(unused_apps),20), len(unused_apps),
+                [f"{a['name']} — {_days_ago(a.get('last_used'))}" for a in unused_apps]))
 
     p = 10 if startup_count > 15 else (5 if startup_count > 8 else 0)
-    pts.append(("Applications au démarrage de Windows", p, startup_count))
+    startup_items = [e["name"] for e in (startup_entries or []) if e.get("enabled")]
+    pts.append(("Applications au démarrage de Windows", p, startup_count, startup_items))
 
     pts.append(("Redémarrage Windows en attente", 5 if pending_reboot else 0,
-                "oui" if pending_reboot else "non"))
+                "oui" if pending_reboot else "non", None))
 
     dism_pts = {"ok":0, "a_verifier":15, "inconnu":5}.get(dism_status, 5)
     dism_txt = {"ok":"OK","a_verifier":"à vérifier","inconnu":"inconnu"}.get(dism_status,"inconnu")
-    pts.append(("Intégrité des fichiers système (DISM)", dism_pts, dism_txt))
+    pts.append(("Intégrité des fichiers système (DISM)", dism_pts, dism_txt, None))
 
-    unhealthy = sum(1 for d in disk_health if not _disk_is_healthy(d.get("HealthStatus")))
-    pts.append(("État S.M.A.R.T. des disques", 25 if unhealthy else 0,
-                f"{unhealthy} disque(s) en alerte" if unhealthy else "OK"))
+    unhealthy_disks = [d for d in disk_health if not _disk_is_healthy(d.get("HealthStatus"))]
+    pts.append(("État S.M.A.R.T. des disques", 25 if unhealthy_disks else 0,
+                f"{len(unhealthy_disks)} disque(s) en alerte" if unhealthy_disks else "OK",
+                [f"{d.get('FriendlyName','?')} — {d.get('HealthStatus')}" for d in unhealthy_disks] or None))
 
     gb = 1024**3
     p = 10 if temp_size > 5*gb else (5 if temp_size > gb else 0)
-    pts.append(("Fichiers temporaires accumulés", p, fmt_size(temp_size)))
+    pts.append(("Fichiers temporaires accumulés", p, fmt_size(temp_size), None))
 
     if win_info.get("install_date"):
         age_days = (datetime.now()-win_info["install_date"]).days
         p = 10 if age_days > 1095 else 0
-        pts.append(("Ancienneté de l'installation Windows", p, f"{age_days//365} an(s)"))
+        pts.append(("Ancienneté de l'installation Windows", p, f"{age_days//365} an(s)", None))
 
-    total = sum(p for _,p,_ in pts)
+    total = sum(p for _,p,_,_ in pts)
     score = max(0, 100-total)
     return score, pts
 
@@ -1223,6 +1235,20 @@ class TempCleanDialog(ctk.CTkToplevel):
         self._lbl_result.configure(
             text=f"✅  {fmt_size(freed)} libérés !", text_color=SUCCESS)
 
+class DetailListDialog(ctk.CTkToplevel):
+    def __init__(self, parent, title, items):
+        super().__init__(parent)
+        self.title(title); self.geometry("480x420")
+        self.resizable(True, True); self.grab_set()
+        ctk.CTkLabel(self, text=title, font=("Segoe UI",14,"bold")
+                     ).pack(padx=16, pady=(16,8), anchor="w")
+        box = ctk.CTkTextbox(self, font=("Segoe UI",11), wrap="word")
+        box.pack(fill="both", expand=True, padx=16, pady=(0,12))
+        box.insert("end", "\n".join(items) if items else "Aucun élément.")
+        box.configure(state="disabled")
+        ctk.CTkButton(self, text="Fermer", width=110, fg_color="#374151",
+                      hover_color="#4B5563", command=self.destroy).pack(pady=(0,16))
+
 class DiagnosticTab(ctk.CTkFrame):
     def __init__(self, parent, get_context):
         super().__init__(parent, corner_radius=0, fg_color=BG_DARK)
@@ -1288,7 +1314,7 @@ class DiagnosticTab(ctk.CTkFrame):
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
-        apps, _ = self._get_context()
+        apps, _, _ = self._get_context()
         win_info = get_windows_info()
         pending  = get_pending_reboot()
         dism     = get_dism_health()
@@ -1299,7 +1325,7 @@ class DiagnosticTab(ctk.CTkFrame):
         for p in (os.environ.get("TEMP",""), r"C:\Windows\Temp", r"C:\Windows\Prefetch"):
             if p and os.path.isdir(p): temp_size += folder_size(p)
         score, breakdown = compute_system_health(apps, startup_count, win_info,
-                                                   pending, dism, disks, temp_size)
+                                                   pending, dism, disks, temp_size, startup_entries)
         folders = get_user_folders_size()
         self.after(0, lambda: self._show_result(score, breakdown, win_info, folders))
 
@@ -1313,14 +1339,24 @@ class DiagnosticTab(ctk.CTkFrame):
         self._lbl_verdict.configure(text=verdict, text_color=color)
 
         for w in self._detail_rows.winfo_children(): w.destroy()
-        for i,(label,pts,detail) in enumerate(breakdown):
+        for i,(label,pts,detail,items) in enumerate(breakdown):
             row_color = SUCCESS if pts==0 else (WARNING if pts<15 else DANGER)
             ctk.CTkLabel(self._detail_rows, text=label, font=("Segoe UI",11), anchor="w"
                          ).grid(row=i,column=0,sticky="w",pady=3)
             ctk.CTkLabel(self._detail_rows, text=str(detail), font=("Segoe UI",11),
                          text_color=MUTED, anchor="w").grid(row=i,column=1,sticky="w",padx=10,pady=3)
+            if items:
+                ctk.CTkButton(self._detail_rows, text="Voir", width=64, height=24,
+                              font=("Segoe UI",10), fg_color="#374151", hover_color="#4B5563",
+                              command=lambda l=label, it=items: DetailListDialog(self, l, it)
+                              ).grid(row=i,column=2,padx=(0,10),pady=3)
+            elif label.startswith("Fichiers temporaires") and pts > 0:
+                ctk.CTkButton(self._detail_rows, text="Nettoyer", width=64, height=24,
+                              font=("Segoe UI",10), fg_color="#374151", hover_color="#4B5563",
+                              command=self._open_temp_clean
+                              ).grid(row=i,column=2,padx=(0,10),pady=3)
             ctk.CTkLabel(self._detail_rows, text="●", font=("Segoe UI",14), text_color=row_color
-                         ).grid(row=i,column=2,sticky="e",pady=3)
+                         ).grid(row=i,column=3,sticky="e",pady=3)
 
         for w in self._sys_rows.winfo_children(): w.destroy()
         install_age = "—"
@@ -1366,8 +1402,12 @@ class DiagnosticTab(ctk.CTkFrame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _export_csv_apps(self):
-        _, export_csv_cb = self._get_context()
+        _, export_csv_cb, _ = self._get_context()
         export_csv_cb()
+
+    def _open_temp_clean(self):
+        _, _, open_temp_cb = self._get_context()
+        open_temp_cb()
 
     def _show_key(self):
         def worker():
@@ -1564,7 +1604,8 @@ class AppCleaner(ctk.CTk):
 
         # ── Tab Diagnostic PC ──
         t5.grid_rowconfigure(0,weight=1)
-        self._diag = DiagnosticTab(t5, get_context=lambda: (self._all_apps, self._export_csv))
+        self._diag = DiagnosticTab(t5, get_context=lambda: (
+            self._all_apps, self._export_csv, lambda: TempCleanDialog(self)))
         self._diag.grid(row=0,column=0,sticky="nsew")
         self._diag_run_once = False
 

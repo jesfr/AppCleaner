@@ -845,8 +845,10 @@ class UpdateDialog(ctk.CTkToplevel):
     def _run(self):
         try:
             self._proc = subprocess.Popen(
-                ["winget","upgrade","--all","--include-unknown"],
+                ["winget","upgrade","--all","--include-unknown",
+                 "--accept-package-agreements","--accept-source-agreements"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW)
             updated = 0
@@ -987,9 +989,9 @@ class AppCleaner(ctk.CTk):
         threading.Thread(target=self._check_update, daemon=True).start()
 
     def _build_ui(self):
-        self.grid_rowconfigure(1,weight=1); self.grid_columnconfigure(0,weight=1)
+        self.grid_rowconfigure(2,weight=1); self.grid_columnconfigure(0,weight=1)
 
-        # Header
+        # ── Header (row 0) ──
         hdr = ctk.CTkFrame(self, height=64, corner_radius=0, fg_color=BG_HDR)
         hdr.grid(row=0, column=0, sticky="ew"); hdr.grid_columnconfigure(1,weight=1)
         ctk.CTkLabel(hdr,text="🗑  AppCleaner",font=("Segoe UI",20,"bold")
@@ -1006,31 +1008,41 @@ class AppCleaner(ctk.CTk):
                       font=("Segoe UI",11,"bold"),fg_color=WARNING,hover_color="#D97706",
                       command=self._open_releases)
         self._btn_update.grid(row=0,column=4,padx=4,pady=14)
-        self._btn_update.grid_remove()  # caché jusqu'à ce qu'une update soit dispo
+        self._btn_update.grid_remove()
         ctk.CTkButton(hdr,text="☕ Don",width=80,height=36,
                       font=("Segoe UI",11),fg_color="#1D4ED8",hover_color="#1E40AF",
                       command=lambda:__import__("webbrowser").open("https://www.paypal.com/paypalme/jesfr306")
-                      ).grid(row=0,column=4,padx=4,pady=14)
+                      ).grid(row=0,column=5,padx=4,pady=14)
         self._lbl_status = ctk.CTkLabel(hdr,text="",font=("Segoe UI",11),text_color=MUTED)
-        self._lbl_status.grid(row=0,column=5,padx=20)
+        self._lbl_status.grid(row=0,column=6,padx=20)
 
-        # Tabs
-        self._tabs = ctk.CTkTabview(self, corner_radius=0, fg_color=BG_HDR,
-            segmented_button_fg_color=BG_HDR, segmented_button_selected_color=ACCENT,
-            segmented_button_selected_hover_color="#2563EB",
-            segmented_button_unselected_color=BG_HDR,
-            segmented_button_unselected_hover_color=BG_BAR)
-        self._tabs.grid(row=1,column=0,sticky="nsew")
-        self._tabs.add("  Applications  ")
-        self._tabs.add("  Espace disque  ")
-        self._tabs.add("  Démarrage  ")
-        self._tabs.add("  Historique  ")
-        self._tabs.configure(command=self._tab_change)
+        # ── Navigation (row 1) — même couleur que le header, aucune bande ──
+        nav = ctk.CTkFrame(self, height=44, corner_radius=0, fg_color=BG_HDR)
+        nav.grid(row=1, column=0, sticky="ew")
+        TABS = ["  Applications  ","  Espace disque  ","  Démarrage  ","  Historique  "]
+        self._nav = ctk.CTkSegmentedButton(nav, values=TABS, command=self._tab_change,
+            fg_color=BG_HDR, selected_color=ACCENT, selected_hover_color="#2563EB",
+            unselected_color=BG_HDR, unselected_hover_color=BG_BAR,
+            font=("Segoe UI",12), height=36)
+        self._nav.set(TABS[0])
+        self._nav.pack(side="left", padx=12, pady=4)
+
+        # ── Zone de contenu (row 2) ──
+        content = ctk.CTkFrame(self, corner_radius=0, fg_color=BG_DARK)
+        content.grid(row=2, column=0, sticky="nsew")
+        content.grid_rowconfigure(0, weight=1); content.grid_columnconfigure(0, weight=1)
+
+        def make_tab():
+            f = ctk.CTkFrame(content, corner_radius=0, fg_color=BG_DARK)
+            f.grid(row=0, column=0, sticky="nsew")
+            f.grid_rowconfigure(1, weight=1); f.grid_columnconfigure(0, weight=1)
+            return f
+
+        t1 = make_tab(); t2 = make_tab(); t3 = make_tab(); t4 = make_tab()
+        self._tab_frames = {TABS[0]: t1, TABS[1]: t2, TABS[2]: t3, TABS[3]: t4}
+        t1.tkraise()  # onglet par défaut
 
         # ── Tab Applications ──
-        t1 = self._tabs.tab("  Applications  ")
-        t1.grid_rowconfigure(1,weight=1); t1.grid_columnconfigure(0,weight=1)
-
         bar = ctk.CTkFrame(t1,height=56,corner_radius=0,fg_color=BG_BAR)
         bar.grid(row=0,column=0,sticky="ew"); bar.grid_columnconfigure(99,weight=1)
         c=0
@@ -1077,14 +1089,11 @@ class AppCleaner(ctk.CTk):
         self._btn_u.grid(row=0,column=3,padx=20,pady=10)
 
         # ── Tab Espace disque ──
-        t2 = self._tabs.tab("  Espace disque  ")
-        t2.grid_rowconfigure(0,weight=1); t2.grid_columnconfigure(0,weight=1)
+        t2.grid_rowconfigure(0,weight=1)
         self._treemap = TreemapView(t2, on_uninstall=lambda a: self._run_uninstall([a]))
         self._treemap.grid(row=0,column=0,sticky="nsew")
 
         # ── Tab Démarrage ──
-        t3 = self._tabs.tab("  Démarrage  ")
-        t3.grid_rowconfigure(1,weight=1); t3.grid_columnconfigure(0,weight=1)
         sb = ctk.CTkFrame(t3,height=52,corner_radius=0,fg_color=BG_BAR)
         sb.grid(row=0,column=0,sticky="ew"); sb.grid_columnconfigure(1,weight=1)
         ctk.CTkLabel(sb,text="Apps lancées au démarrage de Windows",
@@ -1097,8 +1106,8 @@ class AppCleaner(ctk.CTk):
         sf.grid_rowconfigure(0,weight=1); sf.grid_columnconfigure(0,weight=1)
         self._startup_tree = ttk.Treeview(sf,columns=("en","name","scope","cmd"),
             show="headings",style="App.Treeview",selectmode="none")
-        for col,hdr,w in [("en","","36"),("name","Nom","260"),("scope","Portée","100"),("cmd","Commande","500")]:
-            self._startup_tree.heading(col,text=hdr)
+        for col,lbl,w in [("en","","36"),("name","Nom","260"),("scope","Portée","100"),("cmd","Commande","500")]:
+            self._startup_tree.heading(col,text=lbl)
             self._startup_tree.column(col,width=int(w),anchor="center" if col=="en" else "w",
                 stretch=(col=="cmd"))
         sv2 = ttk.Scrollbar(sf,orient="vertical",command=self._startup_tree.yview,
@@ -1110,8 +1119,6 @@ class AppCleaner(ctk.CTk):
         self._startup_entries = []
 
         # ── Tab Historique ──
-        t4 = self._tabs.tab("  Historique  ")
-        t4.grid_rowconfigure(1,weight=1); t4.grid_columnconfigure(0,weight=1)
         hb = ctk.CTkFrame(t4,height=52,corner_radius=0,fg_color=BG_BAR)
         hb.grid(row=0,column=0,sticky="ew"); hb.grid_columnconfigure(1,weight=1)
         ctk.CTkLabel(hb,text="Historique des désinstallations",
@@ -1124,9 +1131,9 @@ class AppCleaner(ctk.CTk):
         hf.grid_rowconfigure(0,weight=1); hf.grid_columnconfigure(0,weight=1)
         self._hist_tree = ttk.Treeview(hf,columns=("date","name","pub","size","ok"),
             show="headings",style="App.Treeview",selectmode="none")
-        for col,hdr,w in [("date","Date","150"),("name","Application","280"),
+        for col,lbl,w in [("date","Date","150"),("name","Application","280"),
                           ("pub","Éditeur","160"),("size","Taille","100"),("ok","Résultat","90")]:
-            self._hist_tree.heading(col,text=hdr)
+            self._hist_tree.heading(col,text=lbl)
             self._hist_tree.column(col,width=int(w),anchor="w" if col not in ("size","ok") else "center",
                 stretch=(col=="name"))
         sv3 = ttk.Scrollbar(hf,orient="vertical",command=self._hist_tree.yview,
@@ -1135,11 +1142,12 @@ class AppCleaner(ctk.CTk):
         self._hist_tree.grid(row=0,column=0,sticky="nsew")
         sv3.grid(row=0,column=1,sticky="ns")
 
-    def _tab_change(self):
-        tab = self._tabs.get().lower()
-        if "disque"    in tab: self._treemap.update_apps(self._all_apps)
-        if "démarrage" in tab: self._refresh_startup()
-        if "historique" in tab: self._refresh_history()
+    def _tab_change(self, tab):
+        self._tab_frames[tab].tkraise()
+        tl = tab.lower()
+        if "disque"     in tl: self._treemap.update_apps(self._all_apps)
+        if "démarrage"  in tl: self._refresh_startup()
+        if "historique" in tl: self._refresh_history()
 
     # ── Auto-update ──
     def _check_update(self):

@@ -493,15 +493,18 @@ def _split(items, x, y, w, h):
         return _split(items[:mid],x,y,w,th) + _split(items[mid:],x,y+th+G,w,bh)
 
 class TreemapView(ctk.CTkFrame):
-    def __init__(self, parent, on_uninstall=None, **kw):
+    def __init__(self, parent, on_uninstall=None, on_rescan=None, **kw):
         super().__init__(parent, corner_radius=0, fg_color=BG_DARK, **kw)
-        self._apps = []; self._rects = []; self._tip = None
-        self._on_uninstall = on_uninstall; self._search = ""
+        self._apps = []; self._all_apps = []; self._rects = []; self._tip = None
+        self._on_uninstall = on_uninstall; self._on_rescan = on_rescan; self._search = ""
         self._build()
 
     def set_search(self, term):
         self._search = term.lower().strip()
         if self._rects: self._redraw()
+
+    def _trigger_rescan(self):
+        if self._on_rescan is not None: self._on_rescan()
 
     def _build(self):
         self.grid_rowconfigure(1, weight=1)
@@ -515,13 +518,15 @@ class TreemapView(ctk.CTkFrame):
         drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
         self._drive_var = tk.StringVar(value=drives[0] if drives else "C:\\")
         ctk.CTkComboBox(top, values=drives, width=100, variable=self._drive_var,
-                        command=lambda _: self._redraw()).grid(row=0,column=1,padx=(0,16),pady=12)
+                        command=lambda _: self._on_drive_change()).grid(row=0,column=1,padx=(0,16),pady=12)
         self._lbl_disk = ctk.CTkLabel(top, text="", font=("Segoe UI",11), text_color=MUTED)
         self._lbl_disk.grid(row=0, column=2, padx=8)
         self._bar_c = tk.Canvas(top, height=14, bg=BG_HDR, highlightthickness=0)
         self._bar_c.grid(row=0, column=3, sticky="ew", padx=(0,16), pady=19)
         ctk.CTkLabel(top, text="Survolez pour les détails · les apps sans taille connue sont masquées",
                      font=("Segoe UI",10), text_color=MUTED).grid(row=0,column=4,padx=(0,16))
+        ctk.CTkButton(top, text="🔄 Scanner le lecteur", width=160,
+                      command=self._trigger_rescan).grid(row=0,column=5,padx=(0,16))
 
         self._c = tk.Canvas(self, bg=BG_DARK, highlightthickness=0)
         self._c.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
@@ -531,8 +536,18 @@ class TreemapView(ctk.CTkFrame):
         self._c.bind("<Button-1>", self._on_click)
 
     def update_apps(self, apps):
-        self._apps = sorted([a for a in apps if a.get("size",0)>0],
-                            key=lambda a: a["size"], reverse=True)
+        self._all_apps = [a for a in apps if a.get("size",0)>0]
+        self._filter_apps()
+        self._redraw()
+
+    def _filter_apps(self):
+        drive = self._drive_var.get().upper()
+        self._apps = sorted(
+            [a for a in self._all_apps if (a.get("location") or "").upper().startswith(drive)],
+            key=lambda a: a["size"], reverse=True)
+
+    def _on_drive_change(self):
+        self._filter_apps()
         self._redraw()
 
     def _draw_disk_bar(self):
@@ -1124,7 +1139,8 @@ class AppCleaner(ctk.CTk):
 
         # ── Tab Espace disque ──
         t2.grid_rowconfigure(0,weight=1)
-        self._treemap = TreemapView(t2, on_uninstall=lambda a: self._run_uninstall([a]))
+        self._treemap = TreemapView(t2, on_uninstall=lambda a: self._run_uninstall([a]),
+                                     on_rescan=self._rescan)
         self._treemap.grid(row=0,column=0,sticky="nsew")
 
         # ── Tab Démarrage ──
@@ -1296,7 +1312,11 @@ class AppCleaner(ctk.CTk):
         n  = len(self._all_apps)
         sz = sum(a.get("size",0) for a in self._all_apps)
         self._lbl_status.configure(text=f"{n} applications — {fmt_size(sz)} au total")
+        self._refresh_views()
+
+    def _refresh_views(self):
         self._filter()
+        self._treemap.update_apps(self._all_apps)
 
     # ── Filtres ──
     def _filter(self, *_):
@@ -1339,18 +1359,24 @@ class AppCleaner(ctk.CTk):
         self._btn_u.configure(state="disabled")
         prog = ProgressDialog(self)
         def worker():
-            ok=fail=freed=0
+            ok=fail=freed=0; removed=[]
             for i,app in enumerate(apps):
                 prog.after(0,lambda n=app["name"],d=i,t=len(apps):prog.update(d,t,n))
                 s,msg = do_uninstall(app)
                 append_history(app, s)
-                if s: ok+=1; freed+=app.get("size",0); prog.after(0,lambda n=app["name"]:prog.log_line(f"✓  {n}"))
+                if s:
+                    ok+=1; freed+=app.get("size",0); removed.append(app)
+                    prog.after(0,lambda n=app["name"]:prog.log_line(f"✓  {n}"))
                 else: fail+=1; prog.after(0,lambda n=app["name"],m=msg:prog.log_line(f"✗  {n}  ({m})"))
-            prog.after(0,lambda:self._result(prog,ok,fail,freed))
+            prog.after(0,lambda:self._result(prog,ok,fail,freed,removed))
         threading.Thread(target=worker,daemon=True).start()
 
-    def _result(self,prog,ok,fail,freed):
+    def _result(self,prog,ok,fail,freed,removed):
         prog.grab_release(); prog.destroy()
+        if removed:
+            removed_ids = {id(a) for a in removed}
+            self._all_apps = [a for a in self._all_apps if id(a) not in removed_ids]
+            self._refresh_views()
         ResultDialog(self,ok,fail,freed,self._rescan)
 
     def _rescan(self):

@@ -160,9 +160,12 @@ def is_admin():
     except: return False
 
 def elevate():
-    ctypes.windll.shell32.ShellExecuteW(
+    rc = ctypes.windll.shell32.ShellExecuteW(
         None,"runas",sys.executable," ".join(f'"{a}"' for a in sys.argv),None,1)
-    sys.exit(0)
+    if rc > 32:
+        sys.exit(0)
+    log.error(f"Échec de l'élévation en administrateur (code {rc})")
+    return False
 
 def fmt_size(n):
     for u in ("o","Ko","Mo","Go"):

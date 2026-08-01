@@ -1,17 +1,34 @@
-"""AppCleaner v3.0 — Gestionnaire d'applications Windows"""
+"""AppCleaner v3.1 — Gestionnaire d'applications Windows"""
 
 import customtkinter as ctk
 import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter import messagebox, filedialog
 import winreg, os, subprocess, threading, shutil, sys, ctypes
-import json, struct, codecs, hashlib, string, re, sqlite3, csv
+import json, struct, codecs, hashlib, string, re, sqlite3, csv, logging
 import urllib.request, urllib.error
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from logging.handlers import RotatingFileHandler
 
-CURRENT_VERSION = "v3.0"
+CURRENT_VERSION = "v3.1"
 HISTORY_FILE    = os.path.join(os.path.expanduser("~"), ".appcleaner_history.json")
+LOG_FILE        = os.path.join(os.path.expanduser("~"), ".appcleaner.log")
+
+# ── Journal d'erreurs ─────────────────────────────────────────────────────────
+log = logging.getLogger("appcleaner")
+log.setLevel(logging.INFO)
+_log_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+log.addHandler(_log_handler)
+
+def _log_unhandled(exc_type, exc_value, exc_tb):
+    log.error("Exception non gérée", exc_info=(exc_type, exc_value, exc_tb))
+
+sys.excepthook = _log_unhandled
+threading.excepthook = lambda a: log.error(
+    f"Exception non gérée dans le thread {a.thread.name}",
+    exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -388,7 +405,9 @@ def scan_store():
                 "uninstall":"","quiet":"","portable":False,"store":True,
                 "package_full_name":pkg.get("PackageFullName",""),"size":0,"last_used":None})
         return apps
-    except: return []
+    except Exception:
+        log.exception("Échec du scan Microsoft Store")
+        return []
 
 # ── Désinstallation ───────────────────────────────────────────────────────────
 def do_uninstall(app):
@@ -396,7 +415,9 @@ def do_uninstall(app):
         try:
             subprocess.Popen(f'start "" "steam://uninstall/{app["steam_appid"]}"', shell=True)
             return True, "Lancé dans Steam — confirmez dans le launcher"
-        except Exception as e: return False, str(e)
+        except Exception as e:
+            log.exception(f"Échec désinstallation Steam pour {app.get('name')}")
+            return False, str(e)
 
     if app.get("game_epic"):
         loc      = app.get("location", "")
@@ -407,7 +428,9 @@ def do_uninstall(app):
             if manifest and os.path.exists(manifest):
                 os.remove(manifest)
             return True, "Supprimé"
-        except Exception as e: return False, str(e)
+        except Exception as e:
+            log.exception(f"Échec désinstallation Epic pour {app.get('name')}")
+            return False, str(e)
 
     if app.get("store"):
         pkg = app.get("package_full_name","")
@@ -417,13 +440,17 @@ def do_uninstall(app):
                 f"Remove-AppxPackage -Package '{pkg}'"],
                 capture_output=True, timeout=60)
             return r.returncode == 0, f"Code {r.returncode}"
-        except Exception as e: return False, str(e)
+        except Exception as e:
+            log.exception(f"Échec désinstallation Store pour {app.get('name')}")
+            return False, str(e)
 
     if app.get("portable"):
         loc = app.get("location","")
         if loc and os.path.isdir(loc):
             try: shutil.rmtree(loc); return True, "Dossier supprimé"
-            except Exception as e: return False, str(e)
+            except Exception as e:
+                log.exception(f"Échec suppression dossier portable pour {app.get('name')}")
+                return False, str(e)
         return False, "Dossier introuvable"
 
     cmd = app.get("quiet") or app.get("uninstall","")
@@ -438,8 +465,12 @@ def do_uninstall(app):
     try:
         r = subprocess.run(cmd, shell=True, timeout=180, capture_output=True)
         return r.returncode in (0,3010,1605,1614), f"Code {r.returncode}"
-    except subprocess.TimeoutExpired: return False, "Délai dépassé"
-    except Exception as e: return False, str(e)
+    except subprocess.TimeoutExpired:
+        log.warning(f"Délai dépassé lors de la désinstallation de {app.get('name')}")
+        return False, "Délai dépassé"
+    except Exception as e:
+        log.exception(f"Échec désinstallation classique pour {app.get('name')}")
+        return False, str(e)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TREEMAP
@@ -860,13 +891,16 @@ class UpdateDialog(ctk.CTkToplevel):
             self._proc.wait()
             self.after(0, lambda: self._done(updated, self._proc.returncode))
         except FileNotFoundError:
+            log.error("winget introuvable")
             self.after(0, lambda: self._err("winget introuvable — installez 'App Installer' depuis le Microsoft Store."))
         except Exception as e:
+            log.exception("Échec de la mise à jour winget")
             self.after(0, lambda: self._err(str(e)))
 
     def _done(self, n, rc):
         self._bar.stop(); self._bar.configure(mode="determinate"); self._bar.set(1)
         sep = "\n"+"─"*55+"\n"
+        if rc != 0: log.warning(f"winget upgrade terminé avec le code {rc}")
         self._log.insert("end", f"{sep}✅  Terminé — {n} mise(s) à jour\n" if rc==0
                          else f"{sep}⚠️  Terminé (code {rc})\n")
         self._log.see("end"); self._btn.configure(state="normal")
@@ -983,7 +1017,7 @@ class AppCleaner(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("AppCleaner v3.0"); self.geometry("1300x860"); self.minsize(960,600)
+        self.title("AppCleaner v3.1"); self.geometry("1300x860"); self.minsize(960,600)
         self._all_apps = []; self._filtered = []
         self._build_ui(); self._start_scan()
         threading.Thread(target=self._check_update, daemon=True).start()

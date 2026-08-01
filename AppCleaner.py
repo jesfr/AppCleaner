@@ -205,6 +205,38 @@ def _type_badges(app):
     if not parts:             parts.append("Classique")
     return "  ·  ".join(parts)
 
+# Composants souvent invoqués silencieusement par d'autres logiciels — on évite de
+# les présenter comme "bons candidats" même s'ils semblent inutilisés directement.
+DEP_KEYWORDS = (
+    "runtime","redistributable","redist","framework","sdk","driver",
+    "codec","directx","webview",".net","java","python","node.js",
+    "vcredist","toolkit","broker",
+)
+
+def compute_utility(app):
+    name = app["name"].lower()
+    last = app.get("last_used")
+    if last is None:
+        score, reason = 50, "Aucune donnée d'utilisation"
+    else:
+        days = (datetime.now() - last).days
+        if   days <= 30:  score, reason = 95, "Utilisée récemment"
+        elif days <= 180: score, reason = 75, f"Utilisée il y a {days} j"
+        elif days <= 365: score, reason = 50, f"Non utilisée depuis {days} j"
+        elif days <= 730: score, reason = 25, "Non utilisée depuis plus d'un an"
+        else:             score, reason = 10, "Non utilisée depuis plus de 2 ans"
+    if any(k in name for k in DEP_KEYWORDS):
+        score  = max(score, 80)
+        reason = "Composant partagé potentiel — vérifiez avant de supprimer"
+    if app.get("duplicate"):
+        score  = max(0, score - 20)
+        reason += " · doublon détecté"
+    score = max(0, min(100, score))
+    if   score >= 70: tag, icon = "success", "🟢"
+    elif score >= 40: tag, icon = "warning", "🟡"
+    else:             tag, icon = "danger",  "🔴"
+    return {"score": score, "tag": tag, "icon": icon, "reason": reason}
+
 def is_system(name, publisher, sys_comp, uninstall):
     if sys_comp == 1: return True
     if (publisher or "").lower().strip() in SYSTEM_PUBLISHERS: return True
@@ -609,9 +641,11 @@ class TreemapView(ctk.CTkFrame):
         self._c.configure(cursor="hand2")
         last = app.get("last_used")
         lu = f"il y a {(datetime.now()-last).days} j" if last else "inconnu"
+        u = app.get("utility")
+        util_line = f"\nUtilité : {u['icon']} {u['score']}% — {u['reason']}" if u else ""
         self._show_tip(e.x, e.y,
             f"{app['name']}\nÉditeur : {app.get('publisher') or '—'}\n"
-            f"Taille : {fmt_size(app['size'])}\nDernière utilisation : {lu}")
+            f"Taille : {fmt_size(app['size'])}\nDernière utilisation : {lu}{util_line}")
 
     def _show_tip(self, x, y, text):
         self._hide_tip()
@@ -653,9 +687,9 @@ def _style():
         background=[("active","#374151"),("!active","#1F2937")])
 
 class AppTable(ctk.CTkFrame):
-    COLS    = ("sel","name","publisher","size","last_used","location")
-    HEADERS = ("","Application","Éditeur","Taille","Dernière utilisation","Emplacement")
-    WIDTHS  = (36, 280, 165, 100, 155, 300)
+    COLS    = ("sel","name","publisher","size","last_used","utility","location")
+    HEADERS = ("","Application","Éditeur","Taille","Dernière utilisation","Utilité","Emplacement")
+    WIDTHS  = (36, 280, 160, 100, 155, 110, 230)
 
     def __init__(self, parent, on_change, **kw):
         super().__init__(parent, corner_radius=0, fg_color=BG_DARK, **kw)
@@ -670,7 +704,7 @@ class AppTable(ctk.CTkFrame):
         for col,hdr,w in zip(self.COLS,self.HEADERS,self.WIDTHS):
             self.tree.heading(col, text=hdr)
             self.tree.column(col, width=w, minwidth=max(w//2,36),
-                anchor="center" if col in ("sel","size") else "w",
+                anchor="center" if col in ("sel","size","utility") else "w",
                 stretch=(col=="location"))
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview,
                             style="Dark.Vertical.TScrollbar")
@@ -705,9 +739,11 @@ class AppTable(ctk.CTkFrame):
                 tt = "success" if d<30 else ("warning" if d<90 else "danger")
             else:
                 lu, tt = "inconnu", "muted"
+            u = app.get("utility") or {"icon":"⚪","score":"—"}
+            util = f"{u['icon']} {u['score']}%" if u['score'] != "—" else "⚪ —"
             base = "odd" if i%2 else "even"
             self.tree.insert("","end",iid=str(i),
-                values=("☐",name,pub,sz,lu,app.get("location") or "—"),
+                values=("☐",name,pub,sz,lu,util,app.get("location") or "—"),
                 tags=(base,tt))
         self._on_change()
 
@@ -752,7 +788,7 @@ class AppTable(ctk.CTkFrame):
 class AppDetailDialog(ctk.CTkToplevel):
     def __init__(self, parent, app, on_uninstall):
         super().__init__(parent)
-        self.title(app["name"]); self.geometry("560x370")
+        self.title(app["name"]); self.geometry("560x400")
         self.resizable(False, False); self.grab_set()
         self._app = app; self._on_uninstall = on_uninstall
 
@@ -775,19 +811,24 @@ class AppDetailDialog(ctk.CTkToplevel):
         # ── Info grid ──
         info = ctk.CTkFrame(self, fg_color="transparent")
         info.grid(row=1, column=0, sticky="nsew", padx=20, pady=6)
+        u = app.get("utility")
+        util_color = {"success":SUCCESS,"warning":WARNING,"danger":DANGER}.get(u["tag"]) if u else None
+        util_text  = f"{u['icon']} {u['score']}% — {u['reason']}" if u else "—"
         rows = [
-            ("Éditeur",              app.get("publisher") or "—"),
-            ("Version",              app.get("version")   or "—"),
-            ("Taille",               fmt_size(app["size"]) if app.get("size") else "—"),
-            ("Dernière utilisation", _days_ago(app.get("last_used"))),
-            ("Emplacement",          app.get("location")  or "—"),
-            ("Type",                 _type_badges(app)),
+            ("Éditeur",              app.get("publisher") or "—",        None),
+            ("Version",              app.get("version")   or "—",        None),
+            ("Taille",               fmt_size(app["size"]) if app.get("size") else "—", None),
+            ("Dernière utilisation", _days_ago(app.get("last_used")),     None),
+            ("Utilité",              util_text,                          util_color),
+            ("Emplacement",          app.get("location")  or "—",        None),
+            ("Type",                 _type_badges(app),                  None),
         ]
-        for i, (lbl, val) in enumerate(rows):
+        for i, (lbl, val, color) in enumerate(rows):
             ctk.CTkLabel(info, text=lbl + " :", font=("Segoe UI", 11, "bold"),
                          text_color=MUTED, anchor="e", width=145
                          ).grid(row=i, column=0, sticky="e", pady=3)
             ctk.CTkLabel(info, text=val, font=("Segoe UI", 11), anchor="w",
+                         text_color=color if color else "#E5E7EB",
                          wraplength=310, justify="left"
                          ).grid(row=i, column=1, sticky="w", padx=10, pady=3)
 
@@ -1325,6 +1366,7 @@ class AppCleaner(ctk.CTk):
         with ThreadPoolExecutor(max_workers=8) as ex:
             list(ex.map(process, apps))
         find_duplicates(apps)
+        for a in apps: a["utility"] = compute_utility(a)
         apps.sort(key=lambda a:a["name"].lower())
         self._all_apps = apps
         self.after(0, self._scan_done)

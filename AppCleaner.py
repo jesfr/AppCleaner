@@ -691,9 +691,11 @@ class AppTable(ctk.CTkFrame):
     HEADERS = ("","Application","Éditeur","Taille","Dernière utilisation","Utilité","Emplacement")
     WIDTHS  = (36, 280, 160, 100, 155, 110, 230)
 
-    def __init__(self, parent, on_change, **kw):
+    SORTABLE = ("name","publisher","size","last_used","utility","location")
+
+    def __init__(self, parent, on_change, on_sort=None, **kw):
         super().__init__(parent, corner_radius=0, fg_color=BG_DARK, **kw)
-        self._on_change = on_change
+        self._on_change = on_change; self._on_sort = on_sort
         self._apps = []; self._checked = set()
         self._build()
 
@@ -702,7 +704,10 @@ class AppTable(ctk.CTkFrame):
         self.tree = ttk.Treeview(self, columns=self.COLS, show="headings",
                                   style="App.Treeview", selectmode="none")
         for col,hdr,w in zip(self.COLS,self.HEADERS,self.WIDTHS):
-            self.tree.heading(col, text=hdr)
+            if col in self.SORTABLE:
+                self.tree.heading(col, text=hdr, command=lambda c=col: self._header_click(c))
+            else:
+                self.tree.heading(col, text=hdr)
             self.tree.column(col, width=w, minwidth=max(w//2,36),
                 anchor="center" if col in ("sel","size","utility") else "w",
                 stretch=(col=="location"))
@@ -718,6 +723,14 @@ class AppTable(ctk.CTkFrame):
         self.tree.tag_configure("even",    background=BG_EVEN)
         self.tree.tag_configure("checked", foreground="#60A5FA", font=("Segoe UI",11,"bold"))
         self.tree.bind("<Button-1>", self._click)
+
+    def _header_click(self, col):
+        if self._on_sort is not None: self._on_sort(col)
+
+    def set_sort_indicator(self, sort_col, sort_dir):
+        arrow = " ▲" if sort_dir==1 else " ▼"
+        for col,hdr in zip(self.COLS,self.HEADERS):
+            self.tree.heading(col, text=hdr + (arrow if col==sort_col else ""))
 
     def populate(self, apps):
         self._apps = apps; self._checked.clear()
@@ -1092,10 +1105,26 @@ class AppCleaner(ctk.CTk):
     DAYS_MAP = {"Toutes":0,"30 jours":30,"60 jours":60,"90 jours":90,
                 "6 mois":180,"1 an":365,"2 ans":730}
 
+    SORT_KEYS = {
+        "name":       lambda a: a["name"].lower(),
+        "publisher":  lambda a: (a.get("publisher") or "").lower(),
+        "size":       lambda a: a.get("size",0),
+        "last_used":  lambda a: a.get("last_used") or datetime.min,
+        "utility":    lambda a: (a.get("utility") or {}).get("score", -1),
+        "location":   lambda a: (a.get("location") or "").lower(),
+    }
+    SORT_COMBO_MAP = {
+        "Nom A→Z":              ("name", 1),
+        "Taille ↓":             ("size", -1),
+        "Taille ↑":             ("size", 1),
+        "Dernière utilisation": ("last_used", 1),
+    }
+
     def __init__(self):
         super().__init__()
         self.title("AppCleaner v3.1"); self.geometry("1300x860"); self.minsize(960,600)
         self._all_apps = []; self._filtered = []
+        self._sort_col = "name"; self._sort_dir = 1
         self._build_ui(); self._start_scan()
         threading.Thread(target=self._check_update, daemon=True).start()
 
@@ -1166,7 +1195,7 @@ class AppCleaner(ctk.CTk):
         self._dc.set("Toutes"); self._dc.grid(row=0,column=c,padx=(0,16),pady=12); c+=1
         ctk.CTkLabel(bar,text="Trier par :",font=("Segoe UI",12)).grid(row=0,column=c,padx=(0,4),pady=12); c+=1
         self._sc = ctk.CTkComboBox(bar,values=["Nom A→Z","Taille ↓","Taille ↑","Dernière utilisation"],
-                                    width=180,command=lambda _:self._filter())
+                                    width=180,command=self._on_sort_combo)
         self._sc.set("Nom A→Z"); self._sc.grid(row=0,column=c,padx=(0,16),pady=12); c+=1
         self._vp = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(bar,text="Portables",variable=self._vp,command=self._filter
@@ -1182,7 +1211,7 @@ class AppCleaner(ctk.CTk):
                         command=lambda:self._table.select_all(self._va.get())
                         ).grid(row=0,column=c,padx=16,pady=12)
 
-        self._table = AppTable(t1, on_change=self._update_bot)
+        self._table = AppTable(t1, on_change=self._update_bot, on_sort=self._header_sort)
         self._table.grid(row=1,column=0,sticky="nsew")
 
         bot = ctk.CTkFrame(t1,height=64,corner_radius=0,fg_color=BG_HDR)
@@ -1382,10 +1411,19 @@ class AppCleaner(ctk.CTk):
         self._treemap.update_apps(self._all_apps)
 
     # ── Filtres ──
+    def _on_sort_combo(self, val):
+        self._sort_col, self._sort_dir = self.SORT_COMBO_MAP.get(val, ("name", 1))
+        self._filter()
+
+    def _header_sort(self, col):
+        if col not in self.SORT_KEYS: return
+        if self._sort_col == col: self._sort_dir *= -1
+        else: self._sort_col, self._sort_dir = col, 1
+        self._filter()
+
     def _filter(self, *_):
         s    = self._sv.get().lower()
         days = self.DAYS_MAP.get(self._dc.get(),0)
-        sort = self._sc.get()
         f    = self._all_apps.copy()
         if s:    f = [a for a in f if s in a["name"].lower() or s in (a.get("publisher") or "").lower()]
         if not self._vp.get(): f = [a for a in f if not a.get("portable")]
@@ -1394,12 +1432,10 @@ class AppCleaner(ctk.CTk):
         if days:
             cut = datetime.now()-timedelta(days=days)
             f = [a for a in f if a.get("last_used") is None or a["last_used"]<cut]
-        if   sort=="Taille ↓": f.sort(key=lambda a:a.get("size",0),reverse=True)
-        elif sort=="Taille ↑": f.sort(key=lambda a:a.get("size",0))
-        elif sort=="Dernière utilisation": f.sort(key=lambda a:a.get("last_used") or datetime.min)
-        else: f.sort(key=lambda a:a["name"].lower())
+        f.sort(key=self.SORT_KEYS[self._sort_col], reverse=(self._sort_dir==-1))
         self._filtered = f
         self._table.populate(f)
+        self._table.set_sort_indicator(self._sort_col, self._sort_dir)
         self._lbl_cnt.configure(text=f"{len(f)} application(s) — {fmt_size(sum(a.get('size',0) for a in f))}")
         self._treemap.set_search(self._sv.get())
 

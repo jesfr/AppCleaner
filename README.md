@@ -14,8 +14,8 @@ AppCleaner liste toutes vos applications installées, vous permet de filtrer cel
 
 | Ton PC | Fichier à télécharger |
 |---|---|
-| **Windows 10** ou PC classique (Intel/AMD) | [AppCleaner-Windows10-x64.exe](https://github.com/jesfr/AppCleaner/releases/download/v2.0/AppCleaner-Windows10-x64.exe) |
-| **Windows 11 ARM** (Surface Pro X, PC Snapdragon…) | [AppCleaner-Windows11-ARM64.exe](https://github.com/jesfr/AppCleaner/releases/download/v2.0/AppCleaner-Windows11-ARM64.exe) |
+| **Windows 10** ou PC classique (Intel/AMD) | [AppCleaner-Windows10-x64.exe](https://github.com/jesfr/AppCleaner/releases/download/v3.1/AppCleaner-Windows10-x64.exe) |
+| **Windows 11 ARM** (Surface Pro X, PC Snapdragon…) | [AppCleaner-Windows11-ARM64.exe](https://github.com/jesfr/AppCleaner/releases/download/v3.1/AppCleaner-Windows11-ARM64.exe) |
 
 > ⚠️ **Windows peut afficher un avertissement SmartScreen** au premier lancement (app non signée). Clique sur **"Informations complémentaires"** puis **"Exécuter quand même"**.
 

@@ -1412,9 +1412,19 @@ class DiagnosticTab(ctk.CTkFrame):
     def _show_key(self):
         def worker():
             key = get_windows_key()
-            self.after(0, lambda: messagebox.showinfo("Clé Windows",
-                f"Clé de licence Windows :\n\n{key}" if key else
-                "Impossible de récupérer la clé (droits administrateur requis, ou clé numérique liée à un compte Microsoft)."))
+            if key:
+                msg = f"Clé de licence Windows :\n\n{key}"
+            elif not is_admin():
+                msg = ("Aucune clé trouvée. Relancez AppCleaner en administrateur et réessayez."
+                       "\n\nSi ça ne change rien, c'est normal : voir la note ci-dessous.")
+            else:
+                msg = ("Aucune clé trouvée — c'est normal sur la plupart des PC récents.\n\n"
+                       "Windows 10/11 utilise le plus souvent une licence numérique liée à "
+                       "votre carte mère ou à votre compte Microsoft, sans clé produit stockée "
+                       "en clair. Après une réinstallation, il suffit de vous reconnecter avec "
+                       "le même compte Microsoft (ou de laisser Windows détecter automatiquement "
+                       "la licence liée au matériel) — aucune clé n'est nécessaire.")
+            self.after(0, lambda: messagebox.showinfo("Clé Windows", msg))
         threading.Thread(target=worker, daemon=True).start()
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -243,6 +243,131 @@ def is_system(name, publisher, sys_comp, uninstall):
     if any((name or "").lower().strip().startswith(p) for p in SYSTEM_PREFIXES): return True
     return False
 
+# ── Diagnostic système ────────────────────────────────────────────────────────
+def get_windows_info():
+    info = {"product_name":"—","display_version":"—","build":"—",
+            "install_date":None,"uptime_days":None}
+    try:
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        info["product_name"] = _rv(k,"ProductName","—")
+        info["display_version"] = _rv(k,"DisplayVersion") or _rv(k,"ReleaseId","—")
+        info["build"] = _rv(k,"CurrentBuild","—")
+        ts = _rv(k,"InstallDate",0)
+        if ts: info["install_date"] = datetime.fromtimestamp(int(ts))
+        winreg.CloseKey(k)
+    except Exception:
+        log.exception("Échec lecture infos Windows")
+    try:
+        info["uptime_days"] = ctypes.windll.kernel32.GetTickCount64() / 1000 / 86400
+    except Exception:
+        pass
+    return info
+
+def get_pending_reboot():
+    keys = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"),
+    ]
+    for hive, path in keys:
+        try:
+            k = winreg.OpenKey(hive, path); winreg.CloseKey(k); return True
+        except Exception: continue
+    return False
+
+def get_dism_health():
+    try:
+        r = subprocess.run(["Dism","/Online","/Cleanup-Image","/CheckHealth"],
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        out = (r.stdout or "") + (r.stderr or "")
+        if "No component store corruption detected" in out: return "ok"
+        if r.returncode != 0: return "inconnu"
+        return "a_verifier"
+    except Exception:
+        log.exception("Échec DISM CheckHealth")
+        return "inconnu"
+
+def get_disk_health():
+    try:
+        r = subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",
+            "Get-PhysicalDisk | Select-Object FriendlyName,HealthStatus | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        if not r.stdout.strip(): return []
+        data = json.loads(r.stdout)
+        if isinstance(data, dict): data = [data]
+        return data
+    except Exception:
+        log.exception("Échec lecture santé disque")
+        return []
+
+def _disk_is_healthy(v):
+    if v is None: return True
+    if isinstance(v,(int,float)): return v==0
+    return str(v).strip().lower() in ("healthy","0")
+
+def get_windows_key():
+    try:
+        r = subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",
+            '(Get-CimInstance -Query "select * from SoftwareLicensingService").OA3xOriginalProductKey'],
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        key = (r.stdout or "").strip()
+        return key or None
+    except Exception:
+        log.exception("Échec récupération clé Windows")
+        return None
+
+def get_user_folders_size():
+    home = os.path.expanduser("~")
+    names = ["Documents","Desktop","Pictures","Videos","Downloads","Music"]
+    out = {}
+    for n in names:
+        p = os.path.join(home, n)
+        if os.path.isdir(p): out[n] = folder_size(p)
+    return out
+
+def compute_system_health(apps, startup_count, win_info, pending_reboot,
+                           dism_status, disk_health, temp_size):
+    pts = []  # (label, points, detail affiché)
+    orphans = sum(1 for a in apps if not (a.get("quiet") or a.get("uninstall"))
+                  and not a.get("portable") and not a.get("store")
+                  and not (a.get("game_steam") or a.get("game_epic") or a.get("game_gog")))
+    pts.append(("Entrées de désinstallation orphelines", min(orphans*2,20), orphans))
+
+    dups = sum(1 for a in apps if a.get("duplicate"))
+    pts.append(("Doublons détectés", min(dups*3,15), dups))
+
+    unused = sum(1 for a in apps if a.get("utility") and a["utility"]["score"] <= 25)
+    pts.append(("Applications quasi jamais utilisées", min(unused,20), unused))
+
+    p = 10 if startup_count > 15 else (5 if startup_count > 8 else 0)
+    pts.append(("Applications au démarrage de Windows", p, startup_count))
+
+    pts.append(("Redémarrage Windows en attente", 5 if pending_reboot else 0,
+                "oui" if pending_reboot else "non"))
+
+    dism_pts = {"ok":0, "a_verifier":15, "inconnu":5}.get(dism_status, 5)
+    dism_txt = {"ok":"OK","a_verifier":"à vérifier","inconnu":"inconnu"}.get(dism_status,"inconnu")
+    pts.append(("Intégrité des fichiers système (DISM)", dism_pts, dism_txt))
+
+    unhealthy = sum(1 for d in disk_health if not _disk_is_healthy(d.get("HealthStatus")))
+    pts.append(("État S.M.A.R.T. des disques", 25 if unhealthy else 0,
+                f"{unhealthy} disque(s) en alerte" if unhealthy else "OK"))
+
+    gb = 1024**3
+    p = 10 if temp_size > 5*gb else (5 if temp_size > gb else 0)
+    pts.append(("Fichiers temporaires accumulés", p, fmt_size(temp_size)))
+
+    if win_info.get("install_date"):
+        age_days = (datetime.now()-win_info["install_date"]).days
+        p = 10 if age_days > 1095 else 0
+        pts.append(("Ancienneté de l'installation Windows", p, f"{age_days//365} an(s)"))
+
+    total = sum(p for _,p,_ in pts)
+    score = max(0, 100-total)
+    return score, pts
+
 # ── UserAssist ────────────────────────────────────────────────────────────────
 UA_GUIDS = [
     "{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}",
@@ -1098,6 +1223,160 @@ class TempCleanDialog(ctk.CTkToplevel):
         self._lbl_result.configure(
             text=f"✅  {fmt_size(freed)} libérés !", text_color=SUCCESS)
 
+class DiagnosticTab(ctk.CTkFrame):
+    def __init__(self, parent, get_context):
+        super().__init__(parent, corner_radius=0, fg_color=BG_DARK)
+        self._get_context = get_context
+        self._build()
+
+    def _build(self):
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        top = ctk.CTkFrame(self, height=100, corner_radius=0, fg_color=BG_HDR)
+        top.grid(row=0, column=0, sticky="ew"); top.grid_propagate(False)
+        top.grid_columnconfigure(1, weight=1)
+        self._lbl_score = ctk.CTkLabel(top, text="—", font=("Segoe UI",34,"bold"))
+        self._lbl_score.grid(row=0,column=0,rowspan=2,padx=(24,16),pady=16)
+        ctk.CTkLabel(top, text="Score de santé du PC", font=("Segoe UI",13,"bold"),
+                     anchor="w").grid(row=0,column=1,sticky="sw",pady=(18,0))
+        self._lbl_verdict = ctk.CTkLabel(top, text="Cliquez sur Analyser pour lancer le diagnostic",
+                                          font=("Segoe UI",11), text_color=MUTED, anchor="w")
+        self._lbl_verdict.grid(row=1,column=1,sticky="nw",pady=(0,18))
+        self._btn = ctk.CTkButton(top, text="🔍 Analyser", width=140, command=self.refresh)
+        self._btn.grid(row=0,column=2,rowspan=2,padx=24)
+
+        body = ctk.CTkScrollableFrame(self, fg_color=BG_DARK, corner_radius=0)
+        body.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        body.grid_columnconfigure(0, weight=1)
+
+        detail = ctk.CTkFrame(body, fg_color=BG_BAR, corner_radius=8)
+        detail.grid(row=0, column=0, sticky="ew", padx=12, pady=(12,8))
+        ctk.CTkLabel(detail, text="📋  Détail du diagnostic", font=("Segoe UI",13,"bold")
+                     ).grid(row=0,column=0,sticky="w",padx=16,pady=(12,6))
+        self._detail_rows = ctk.CTkFrame(detail, fg_color="transparent")
+        self._detail_rows.grid(row=1,column=0,sticky="ew",padx=16,pady=(0,12))
+        self._detail_rows.grid_columnconfigure(1, weight=1)
+
+        info = ctk.CTkFrame(body, fg_color=BG_BAR, corner_radius=8)
+        info.grid(row=1, column=0, sticky="ew", padx=12, pady=8)
+        ctk.CTkLabel(info, text="🖥️  Informations système", font=("Segoe UI",13,"bold")
+                     ).grid(row=0,column=0,sticky="w",padx=16,pady=(12,6))
+        self._sys_rows = ctk.CTkFrame(info, fg_color="transparent")
+        self._sys_rows.grid(row=1,column=0,sticky="ew",padx=16,pady=(0,12))
+        self._sys_rows.grid_columnconfigure(1, weight=1)
+
+        prep = ctk.CTkFrame(body, fg_color=BG_BAR, corner_radius=8)
+        prep.grid(row=2, column=0, sticky="ew", padx=12, pady=(8,12))
+        ctk.CTkLabel(prep, text="🧳  Simplifier une future réinstallation", font=("Segoe UI",13,"bold")
+                     ).grid(row=0,column=0,sticky="w",padx=16,pady=(12,6))
+        self._folders_lbl = ctk.CTkLabel(prep, text="Dossiers utilisateur : —",
+                                          font=("Segoe UI",11), text_color=MUTED,
+                                          anchor="w", justify="left", wraplength=900)
+        self._folders_lbl.grid(row=1,column=0,sticky="w",padx=16,pady=(0,10))
+        btnrow = ctk.CTkFrame(prep, fg_color="transparent")
+        btnrow.grid(row=2,column=0,sticky="w",padx=16,pady=(0,14))
+        ctk.CTkButton(btnrow,text="📦 Exporter la liste des apps (winget)",width=260,
+                      command=self._export_winget).pack(side="left",padx=(0,10))
+        ctk.CTkButton(btnrow,text="📋 Exporter en CSV",width=160,
+                      command=self._export_csv_apps).pack(side="left",padx=(0,10))
+        ctk.CTkButton(btnrow,text="🔑 Afficher la clé Windows",width=190,
+                      command=self._show_key).pack(side="left")
+
+    def refresh(self):
+        self._btn.configure(state="disabled", text="Analyse…")
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        apps, _ = self._get_context()
+        win_info = get_windows_info()
+        pending  = get_pending_reboot()
+        dism     = get_dism_health()
+        disks    = get_disk_health()
+        startup_entries = scan_startup()
+        startup_count = sum(1 for e in startup_entries if e.get("enabled"))
+        temp_size = 0
+        for p in (os.environ.get("TEMP",""), r"C:\Windows\Temp", r"C:\Windows\Prefetch"):
+            if p and os.path.isdir(p): temp_size += folder_size(p)
+        score, breakdown = compute_system_health(apps, startup_count, win_info,
+                                                   pending, dism, disks, temp_size)
+        folders = get_user_folders_size()
+        self.after(0, lambda: self._show_result(score, breakdown, win_info, folders))
+
+    def _show_result(self, score, breakdown, win_info, folders):
+        self._btn.configure(state="normal", text="🔄 Réanalyser")
+        color = SUCCESS if score>=70 else (WARNING if score>=40 else DANGER)
+        self._lbl_score.configure(text=f"{score}%", text_color=color)
+        if   score>=70: verdict = "Sain — pas besoin de réinstaller"
+        elif score>=40: verdict = "À surveiller — un nettoyage peut aider"
+        else:           verdict = "Beaucoup de signaux d'encombrement — une réinstallation propre peut valoir le coup"
+        self._lbl_verdict.configure(text=verdict, text_color=color)
+
+        for w in self._detail_rows.winfo_children(): w.destroy()
+        for i,(label,pts,detail) in enumerate(breakdown):
+            icon = "🟢" if pts==0 else ("🟡" if pts<15 else "🔴")
+            ctk.CTkLabel(self._detail_rows, text=label, font=("Segoe UI",11), anchor="w"
+                         ).grid(row=i,column=0,sticky="w",pady=3)
+            ctk.CTkLabel(self._detail_rows, text=str(detail), font=("Segoe UI",11),
+                         text_color=MUTED, anchor="w").grid(row=i,column=1,sticky="w",padx=10,pady=3)
+            ctk.CTkLabel(self._detail_rows, text=icon, font=("Segoe UI",11)
+                         ).grid(row=i,column=2,sticky="e",pady=3)
+
+        for w in self._sys_rows.winfo_children(): w.destroy()
+        install_age = "—"
+        if win_info.get("install_date"):
+            d = (datetime.now()-win_info["install_date"]).days
+            install_age = f"{win_info['install_date'].strftime('%d/%m/%Y')} (il y a {d} j)"
+        sysrows = [
+            ("Système", f"{win_info.get('product_name','—')} — {win_info.get('display_version','—')} (build {win_info.get('build','—')})"),
+            ("Installé le", install_age),
+            ("Depuis le dernier démarrage", f"{win_info['uptime_days']:.1f} j" if win_info.get('uptime_days') else "—"),
+        ]
+        for i,(l,v) in enumerate(sysrows):
+            ctk.CTkLabel(self._sys_rows, text=l+" :", font=("Segoe UI",11,"bold"),
+                         text_color=MUTED, anchor="w", width=220
+                         ).grid(row=i,column=0,sticky="w",pady=3)
+            ctk.CTkLabel(self._sys_rows, text=v, font=("Segoe UI",11), anchor="w"
+                         ).grid(row=i,column=1,sticky="w",padx=10,pady=3)
+
+        if folders:
+            txt = "Dossiers utilisateur (à sauvegarder avant réinstallation) : " + \
+                  "  ·  ".join(f"{n} {fmt_size(s)}" for n,s in folders.items())
+        else:
+            txt = "Dossiers utilisateur : aucune donnée"
+        self._folders_lbl.configure(text=txt)
+
+    def _export_winget(self):
+        path = filedialog.asksaveasfilename(defaultextension=".json",
+            initialfile="appcleaner-winget-export.json",
+            filetypes=[("Fichier JSON","*.json")], title="Exporter la liste winget")
+        if not path: return
+        def worker():
+            try:
+                r = subprocess.run(["winget","export","-o",path,"--accept-source-agreements"],
+                    capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+                ok = r.returncode == 0
+            except Exception:
+                log.exception("Échec export winget")
+                ok = False
+            self.after(0, lambda: messagebox.showinfo("Export winget",
+                f"Export réussi :\n{path}\n\nAprès réinstallation, lancez :\nwinget import -i \"{path}\""
+                if ok else "Échec de l'export winget. Vérifiez que winget est installé."))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _export_csv_apps(self):
+        _, export_csv_cb = self._get_context()
+        export_csv_cb()
+
+    def _show_key(self):
+        def worker():
+            key = get_windows_key()
+            self.after(0, lambda: messagebox.showinfo("Clé Windows",
+                f"Clé de licence Windows :\n\n{key}" if key else
+                "Impossible de récupérer la clé (droits administrateur requis, ou clé numérique liée à un compte Microsoft)."))
+        threading.Thread(target=worker, daemon=True).start()
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FENÊTRE PRINCIPALE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1159,7 +1438,7 @@ class AppCleaner(ctk.CTk):
         # ── Navigation (row 1) — même couleur que le header, aucune bande ──
         nav = ctk.CTkFrame(self, height=44, corner_radius=0, fg_color=BG_HDR)
         nav.grid(row=1, column=0, sticky="ew")
-        TABS = ["  Applications  ","  Espace disque  ","  Démarrage  ","  Historique  "]
+        TABS = ["  Applications  ","  Espace disque  ","  Démarrage  ","  Historique  ","  Diagnostic PC  "]
         self._nav = ctk.CTkSegmentedButton(nav, values=TABS, command=self._tab_change,
             fg_color=BG_HDR, selected_color=ACCENT, selected_hover_color="#2563EB",
             unselected_color=BG_HDR, unselected_hover_color=BG_BAR,
@@ -1178,8 +1457,8 @@ class AppCleaner(ctk.CTk):
             f.grid_rowconfigure(1, weight=1); f.grid_columnconfigure(0, weight=1)
             return f
 
-        t1 = make_tab(); t2 = make_tab(); t3 = make_tab(); t4 = make_tab()
-        self._tab_frames = {TABS[0]: t1, TABS[1]: t2, TABS[2]: t3, TABS[3]: t4}
+        t1 = make_tab(); t2 = make_tab(); t3 = make_tab(); t4 = make_tab(); t5 = make_tab()
+        self._tab_frames = {TABS[0]: t1, TABS[1]: t2, TABS[2]: t3, TABS[3]: t4, TABS[4]: t5}
         t1.tkraise()  # onglet par défaut
 
         # ── Tab Applications ──
@@ -1283,12 +1562,21 @@ class AppCleaner(ctk.CTk):
         self._hist_tree.grid(row=0,column=0,sticky="nsew")
         sv3.grid(row=0,column=1,sticky="ns")
 
+        # ── Tab Diagnostic PC ──
+        t5.grid_rowconfigure(0,weight=1)
+        self._diag = DiagnosticTab(t5, get_context=lambda: (self._all_apps, self._export_csv))
+        self._diag.grid(row=0,column=0,sticky="nsew")
+        self._diag_run_once = False
+
     def _tab_change(self, tab):
         self._tab_frames[tab].tkraise()
         tl = tab.lower()
         if "disque"     in tl: self._treemap.update_apps(self._all_apps)
         if "démarrage"  in tl: self._refresh_startup()
         if "historique" in tl: self._refresh_history()
+        if "diagnostic" in tl and not self._diag_run_once:
+            self._diag_run_once = True
+            self._diag.refresh()
 
     # ── Auto-update ──
     def _check_update(self):
